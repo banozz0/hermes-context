@@ -15,6 +15,8 @@ from typing import Any, Callable, Iterator
 from .contract import CONTRACT_VERSION, effective_freshness, validate_snapshot
 from .events import EventStore
 
+OWNER_POLL_SECONDS = 1.0  # How soon a registered observer notices its gateway claimed the runtime lock.
+
 
 def timestamp(value: str | float | datetime | None = None) -> str:
     if isinstance(value, str):
@@ -140,6 +142,7 @@ class Observer:
         events_per_segment: int = 1000,
         compression_chain: Callable[[str], tuple[str, ...]] | None = None,
         route_owner: Callable[[Route, str], bool] | None = None,
+        known_lanes: Callable[[], list[KnownLane]] | None = None,
     ):
         self.profile = profile
         self.offline_after_seconds = int(offline_after_seconds)
@@ -148,6 +151,7 @@ class Observer:
         self.events = EventStore(self.store.directory, per_segment=events_per_segment)
         self._compression_chain = compression_chain or (lambda _session_id: ())
         self._route_owner = route_owner or (lambda _route, _session_id: False)
+        self._known_lanes = known_lanes or (lambda: [])
         self._gateway_owner = gateway_owner or (lambda: True)
         self._lanes: dict[str, dict[str, Any]] = {}
         self._recovery_heartbeat: str | None = None
@@ -571,15 +575,29 @@ class Observer:
                 self._publish(timestamp())
 
     def start_heartbeat(self) -> None:
+        """Beat while this process owns the gateway runtime lock, backfilling known lanes just before the first beat.
+
+        Hermes loads the launch profile's plugins before its gateway claims the lock, so a process that does not
+        own it yet polls cheaply until it does. A CLI never claims it, so it never beats.
+        """
         with self._lock:
-            if not self._gateway_owner():
-                return
             if self._thread is not None and self._thread.is_alive():
                 return
             self._stop.clear()
-            self.heartbeat()  # Publish before returning; a reader may check immediately after activation.
+            owned = self._gateway_owner()
+            if owned:
+                self.backfill(self._known_lanes)
+                self.heartbeat()  # Publish before returning; a reader may check immediately after activation.
 
             def run() -> None:
+                if not owned:
+                    while not self._gateway_owner():
+                        if self._stop.wait(OWNER_POLL_SECONDS):
+                            return
+                    with self._lock:
+                        self._restore_snapshot()  # Construction skipped stale-turn recovery: no lock yet.
+                    self.backfill(self._known_lanes)
+                    self.heartbeat()
                 while not self._stop.wait(self.heartbeat_interval_seconds):
                     if not self._gateway_owner():
                         return

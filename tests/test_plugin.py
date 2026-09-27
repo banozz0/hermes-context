@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,7 +11,9 @@ import pytest
 import hermes_context_observer as plugin
 from hermes_context_observer import register
 from hermes_context_observer.contract import effective_freshness, validate_snapshot
-from hermes_context_observer.observer import Observer, Route
+from hermes_context_observer.observer import KnownLane, Observer, Route
+
+from conftest import read_snapshot
 
 
 EXPECTED_HOOKS = {
@@ -182,6 +185,38 @@ def test_registration_restores_saved_rows_without_an_inbound_message(tmp_path: P
     finally:
         if context.unload:
             context.unload()
+
+
+def test_registration_before_the_gateway_lock_starts_once_the_gateway_takes_it(tmp_path: Path, monkeypatch):
+    """Hermes loads the launch profile's plugins during config load, before its gateway claims the runtime lock."""
+    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
+    if not (hermes_source / "hermes_constants.py").is_file():
+        pytest.skip("Hermes source checkout is required for the plugin integration seam")
+    monkeypatch.syspath_prepend(str(hermes_source))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway import status
+    owns_lock = [False]
+    monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: owns_lock[0])
+    routed = Route("alpha", "discord", "thread-2", thread_id="thread-2")
+    monkeypatch.setattr(plugin, "_known_lanes", lambda *_args: [
+        KnownLane(routed, "session-b", model=None, provider=None, used=None, maximum=0, at="2020-01-01T00:00:00.000Z")])
+    old = Observer(tmp_path, "alpha")
+    old.session_started(Route("alpha", "discord", "thread-1", thread_id="thread-1"), "session-a",
+                        at="2020-01-01T00:00:00.000Z")  # In flight when the previous gateway stopped.
+    context = FakeContext()
+    register(context)
+    try:
+        assert read_snapshot(tmp_path)["gateway"]["heartbeat_at"] == "2020-01-01T00:00:00.000Z"
+        owns_lock[0] = True
+        deadline = time.monotonic() + 5
+        while effective_freshness(snapshot := read_snapshot(tmp_path), at=datetime.now(timezone.utc)) != "live":
+            assert time.monotonic() < deadline, "no heartbeat after the gateway took the runtime lock"
+            time.sleep(0.05)
+        validate_snapshot(snapshot)
+        assert {row["session_id"]: row["state"] for row in snapshot["sessions"]} == {"session-a": "idle",
+                                                                                     "session-b": "idle"}
+    finally:
+        context.unload()
 
 
 def test_register_uses_only_supported_observer_hooks(tmp_path: Path, monkeypatch):

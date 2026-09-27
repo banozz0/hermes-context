@@ -257,15 +257,16 @@ def register(ctx) -> None:
     thread_factory = spawn_context_thread
     home = Path(get_hermes_home())
     routing_home = Path(get_process_hermes_home())
+    profile = str(ctx.profile_name)
     observer = Observer(
         home,
-        str(ctx.profile_name),
+        profile,
         thread_factory=thread_factory,
         gateway_owner=owns_gateway_runtime_lock,
         compression_chain=lambda session_id: _compression_chain(home, session_id),
         route_owner=lambda route, session_id: _route_owner(routing_home, route, session_id),
+        known_lanes=lambda: _known_lanes(routing_home, home, profile),
     )
-    profile = observer.profile
 
     def pre_gateway_dispatch(**_payload: Any) -> None:
         observer.start_heartbeat()
@@ -382,5 +383,4 @@ def register(ctx) -> None:
     for name, callback in callbacks.items():
         ctx.register_hook(name, callback)
     ctx.on_unload(observer.close)
-    observer.backfill(lambda: _known_lanes(routing_home, home, profile))
     observer.start_heartbeat()
