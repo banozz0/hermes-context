@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-context.local/contracts/v1/event.schema.json",
+  "title": "Hermes Context history event v1",
+  "description": "One immutable record per completed top-level model request (kind model_request) or tool call (kind tool_call). Both kinds share one per-profile sequence.",
+  "oneOf": [{"$ref": "#/$defs/model_request"}, {"$ref": "#/$defs/tool_call"}],
+  "$defs": {
+    "identity": {"type": "string", "pattern": "^hc1:[0-9a-f]{64}$"},
+    "count": {"type": "integer", "minimum": 0},
+    "model_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "kind", "event_id", "sequence", "routing_id", "lineage_root_id", "previous_session_id", "session_id", "timestamp", "profile", "model", "provider", "state", "context"],
+      "properties": {
+        "contract_version": {"const": "hermes-context.v1"},
+        "kind": {"const": "model_request"},
+        "event_id": {"$ref": "#/$defs/identity"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "routing_id": {"$ref": "#/$defs/identity"},
+        "lineage_root_id": {"type": "string", "minLength": 1},
+        "previous_session_id": {"type": ["string", "null"]},
+        "session_id": {"type": "string", "minLength": 1},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "profile": {"type": "string", "minLength": 1},
+        "model": {"type": ["string", "null"]},
+        "provider": {"type": ["string", "null"]},
+        "state": {"enum": ["working", "needs_attention", "idle"]},
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["used", "maximum", "percentage", "source", "measured_at"],
+          "properties": {
+            "used": {"type": ["integer", "null"], "minimum": 0},
+            "maximum": {"type": ["integer", "null"], "minimum": 0},
+            "percentage": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+            "source": {"type": ["string", "null"]},
+            "measured_at": {"type": ["string", "null"], "format": "date-time"}
+          }
+        }
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "kind", "event_id", "sequence", "routing_id", "lineage_root_id", "previous_session_id", "session_id", "request_event_id", "timestamp", "profile", "tool_name", "skill_name", "estimated_tokens", "duration_ms", "status"],
+      "properties": {
+        "contract_version": {"const": "hermes-context.v1"},
+        "kind": {"const": "tool_call"},
+        "event_id": {"$ref": "#/$defs/identity"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "routing_id": {"$ref": "#/$defs/identity"},
+        "lineage_root_id": {"type": "string", "minLength": 1},
+        "previous_session_id": {"type": ["string", "null"]},
+        "session_id": {"type": "string", "minLength": 1},
+        "request_event_id": {"description": "event_id of the model request that issued the call, or null when Hermes gave none.", "oneOf": [{"$ref": "#/$defs/identity"}, {"type": "null"}]},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "profile": {"type": "string", "minLength": 1},
+        "tool_name": {"type": "string", "minLength": 1},
+        "skill_name": {"description": "The skill a skill_view call loaded; null for every other tool.", "type": ["string", "null"], "minLength": 1},
+        "estimated_tokens": {"description": "Hermes's rough token estimate of the tool's result, never a provider count.", "$ref": "#/$defs/count"},
+        "duration_ms": {"$ref": "#/$defs/count"},
+        "status": {"enum": ["ok", "error"]}
+      }
+    }
+  }
+}

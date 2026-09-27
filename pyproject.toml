@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-context-observer"
+version = "0.1.0"
+description = "Privacy-safe live Hermes session observer bridge"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["hermes_context_observer"]
+
+[tool.setuptools.package-data]
+hermes_context_observer = ["plugin.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

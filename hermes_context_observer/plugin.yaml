@@ -1,0 +1,4 @@
+name: hermes-context-observer
+version: "0.1.0"
+description: Privacy-safe live Hermes session projection for Hermes Context
+kind: standalone

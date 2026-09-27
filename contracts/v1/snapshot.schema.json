@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-context.local/contracts/v1/snapshot.schema.json",
+  "title": "Hermes Context live snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "profile", "generated_at", "freshness", "gateway", "sessions"],
+  "properties": {
+    "contract_version": {"const": "hermes-context.v1"},
+    "profile": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string"},
+    "freshness": {"enum": ["live", "offline"]},
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["heartbeat_at", "offline_after_seconds"],
+      "properties": {
+        "heartbeat_at": {"type": "string"},
+        "offline_after_seconds": {"type": "integer", "minimum": 1}
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["routing_id", "profile", "platform", "session_id", "lineage_root_id", "previous_session_id", "discord_route", "display_name", "state", "model", "provider", "context", "current_tool", "timing"],
+        "properties": {
+          "routing_id": {"type": "string", "pattern": "^hc1:[0-9a-f]{64}$"},
+          "profile": {"type": "string", "minLength": 1},
+          "platform": {"type": "string", "minLength": 1},
+          "session_id": {"type": "string", "minLength": 1},
+          "lineage_root_id": {"type": "string", "minLength": 1},
+          "previous_session_id": {"type": ["string", "null"]},
+          "discord_route": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["guild_id", "channel_id", "thread_id", "channel_label"],
+            "properties": {
+              "guild_id": {"type": ["string", "null"]},
+              "channel_id": {"type": ["string", "null"]},
+              "thread_id": {"type": ["string", "null"]},
+              "channel_label": {"type": ["string", "null"], "maxLength": 100}
+            }
+          },
+          "display_name": {"type": "string", "minLength": 1},
+          "state": {"enum": ["working", "needs_attention", "idle"]},
+          "model": {"type": ["string", "null"]},
+          "provider": {"type": ["string", "null"]},
+          "context": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["used", "maximum", "percentage", "source", "measured_at"],
+            "properties": {
+              "used": {"type": ["integer", "null"], "minimum": 0},
+              "maximum": {"type": ["integer", "null"], "minimum": 0},
+              "percentage": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+              "source": {"type": ["string", "null"]},
+              "measured_at": {"type": ["string", "null"]}
+            }
+          },
+          "current_tool": {"type": ["string", "null"]},
+          "timing": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turn_started_at", "last_activity_at"],
+            "properties": {
+              "turn_started_at": {"type": ["string", "null"]},
+              "last_activity_at": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    }
+  }
+}
