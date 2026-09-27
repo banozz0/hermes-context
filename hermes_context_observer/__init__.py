@@ -47,14 +47,21 @@ def _clean(value: Any) -> str | None:
 
 
 def _discord_channels(home: Path) -> dict[str, tuple[str | None, str | None]]:
-    """Channel ID → (channel name, guild name) from this profile's read-only gateway channel directory."""
+    """Channel ID → (channel name, guild name) from this profile's read-only gateway channel directory.
+
+    Hermes may list a channel twice, once as a guild-less group named after its session; the guild entry wins.
+    """
     try:
         entries = json.loads((home / "channel_directory.json").read_text(encoding="utf-8"))["platforms"]["discord"]
     except (OSError, ValueError, KeyError, TypeError):
         return {}
-    return {str(entry.get("id")): (_clean(entry.get("name")), _clean(entry.get("guild")))
-            for entry in (entries if isinstance(entries, list) else [])
-            if isinstance(entry, dict) and not entry.get("thread_id")}
+    channels: dict[str, tuple[str | None, str | None]] = {}
+    for entry in (entries if isinstance(entries, list) else []):
+        if isinstance(entry, dict) and not entry.get("thread_id"):
+            channel_id, guild = str(entry.get("id")), _clean(entry.get("guild"))
+            if guild or channel_id not in channels:
+                channels[channel_id] = (_clean(entry.get("name")), guild)
+    return channels
 
 
 def _thread_name(chat_name: str, channel: str | None, guild: str | None) -> str:

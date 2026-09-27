@@ -68,6 +68,8 @@ def test_thread_lane_gets_bare_thread_name_and_parent_channel_label(tmp_path: Pa
     write_directory(
         tmp_path,
         {"id": "channel-10", "name": "ops", "guild": "Hermes", "type": "channel"},
+        # Hermes may list the channel again, guild-less and named after its session; it must not win.
+        {"id": "channel-10", "name": "Hermes / #ops", "type": "group"},
         {"id": "channel-10:thread-1", "name": "ops / Deploy review", "type": "thread", "thread_id": "thread-1"},
     )
     values = {
