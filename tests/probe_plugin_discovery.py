@@ -232,7 +232,29 @@ def main() -> None:
             tool("alpha", home_a, "alpha-1", "alpha-turn:api:1", "call-a1", "skill_view")
             assert len(events(home_a)) == 4, "a restarted gateway replaying requests and tool calls writes nothing"
         assert snapshot(home_b) == beta
-        for home in (home_a, home_b):
+        # A fresh install beside a gateway that already routes a lane lists that lane at discovery, before any request.
+        from hermes_state import SessionDB
+        home_c = base / "profiles" / "gamma"
+        home_c.mkdir(parents=True)
+        install_plugin(home_c)
+        with SessionDB(home_c / "state.db") as db:
+            db.create_session("gamma-1", "discord", model="m")
+        now = datetime.now().isoformat()  # Hermes stores naive local times.
+        routed = {"session_key": "agent:gamma:discord:thread:thread-7", "session_id": "gamma-1", "platform": "discord",
+                  "origin": {"platform": "discord", "chat_id": "thread-7", "thread_id": "thread-7", "chat_type": "thread",
+                             "chat_name": "Routed lane", "user_id": "u", "user_name": "PRIVATE", "chat_topic": "PRIVATE"},
+                  "last_prompt_tokens": 0, "created_at": now, "updated_at": now}
+        with SessionDB(base / "state.db") as db:
+            db.save_gateway_routing_entry(routed["session_key"], json.dumps(routed), scope=str((base / "sessions").resolve()))
+        with scope(home_c):
+            assert acquire_gateway_runtime_lock()
+            managers["gamma"] = PluginManager()
+            managers["gamma"].discover_and_load()
+            backfilled = snapshot(home_c)["sessions"]
+            assert [(row["session_id"], row["display_name"], row["state"]) for row in backfilled] == [
+                ("gamma-1", "Routed lane", "idle")]
+            assert not events(home_c), "backfill writes no event"
+        for home in (home_a, home_b, home_c):
             for path in (home / "hermes-context").rglob("*"):
                 assert not path.is_file() or b"PRIVATE" not in path.read_bytes(), path
         if keep := os.environ.get("HERMES_CONTEXT_PROBE_KEEP"):
@@ -240,11 +262,11 @@ def main() -> None:
             for name, home in (("alpha", home_a), ("beta", home_b)):
                 shutil.copytree(home / "hermes-context", Path(keep) / "profiles" / name / "hermes-context")
         print("plugin discovery A→B→A, request and tool-call uniqueness/privacy/replay, same-home no-loss, "
-              "gateway-down Offline, restart: ok")
+              "gateway-down Offline, restart, install-time backfill: ok")
     finally:
-        for name, home in (("alpha", home_a), ("beta", home_b)):
-            with scope(home):
-                managers[name].unload()
+        for name, manager in managers.items():
+            with scope(base / "profiles" / name):
+                manager.unload()
                 if owns_gateway_runtime_lock():
                     release_gateway_runtime_lock()
         shutil.rmtree(root)

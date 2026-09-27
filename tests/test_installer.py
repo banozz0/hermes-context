@@ -72,10 +72,17 @@ def statuses(world: dict) -> dict[str, str]:
 def plugin_files(world: dict) -> dict[str, bytes]:
     root = world["homes"]["default"]
     return {str(path.relative_to(root)): path.read_bytes() for home in world["homes"].values()
-            for path in sorted((home / "plugins" / PLUGIN).rglob("*")) if path.is_file() and ".git" not in path.parts}
+            for path in sorted((home / "plugins" / PLUGIN).rglob("*")) if path.is_file() and not {".git", "__pycache__"} & set(path.parts)}
+
+
+def real_hermes_plugins() -> dict[str, float]:
+    """Every plugin directory in the real Hermes home and its modification time."""
+    root = Path.home() / ".hermes"
+    return {str(path): path.stat().st_mtime for path in [*root.glob("plugins/*"), *root.glob("profiles/*/plugins/*")]}
 
 
 def test_install_rerun_uninstall_and_purge(world: dict):
+    before = real_hermes_plugins()
     ok(world)
     assert statuses(world) == dict.fromkeys(world["homes"], "enabled")
     assert (world["install_dir"] / APP / "Contents" / "MacOS" / "HermesContext").is_file()
@@ -83,9 +90,14 @@ def test_install_rerun_uninstall_and_purge(world: dict):
     assert files["profiles/alpha/plugins/hermes-context-observer/observer.py"] == (
         REPO / "hermes_context_observer" / "observer.py").read_bytes()
 
-    ok(world)
+    binary = world["install_dir"] / APP / "Contents" / "MacOS" / "HermesContext"
+    placed = binary.stat().st_ino
+    rerun = run(world)
+    assert rerun.returncode == 0, rerun.stderr
+    assert "Hermes profile alpha is already connected." in rerun.stdout
+    assert "is already this version." in rerun.stdout
     assert plugin_files(world) == files
-    assert (world["install_dir"] / APP).is_dir()
+    assert binary.stat().st_ino == placed, "an identical app is left in place"
 
     history = world["home"] / "Library" / "Application Support" / "dev.banozz0.hermes-context" / "telemetry.sqlite"
     history.parent.mkdir(parents=True)
@@ -103,7 +115,7 @@ def test_install_rerun_uninstall_and_purge(world: dict):
     ok(world, "--uninstall", "--purge")
     assert not history.parent.exists()
     assert not any(bridge.parents[1].exists() for bridge in bridges)
-    assert not (Path.home() / ".hermes" / "profiles" / "alpha").exists(), "the real Hermes home was touched"
+    assert real_hermes_plugins() == before, "the real Hermes home was touched"
 
 
 def test_preflight_stops_before_touching_anything(world: dict, tmp_path: Path):

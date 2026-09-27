@@ -14,7 +14,7 @@ public struct SessionList: Equatable, Sendable {
     public let offline: Set<String>
 
     public var isEmpty: Bool { current.isEmpty }
-    /// Every lane, visible then hidden.
+    /// Every lane, visible then hidden; with a query, the visible part is only the matches.
     public var all: [LiveSession] { current + hidden }
 
     public init(snapshots: [ProfileSnapshot], query: String = "", now: Date, hideAfter: TimeInterval = defaultHideAfter) {

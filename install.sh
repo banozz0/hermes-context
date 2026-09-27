@@ -38,7 +38,7 @@ has_hermes() { command -v hermes >/dev/null 2>&1; }
 # model just before the Gateway column (running or stopped), and a display name shows as `Name (id)`.
 # The table ends at its first blank line; warnings may follow.
 profiles() {
-    hermes profile list | awk '
+    hermes profile list </dev/null | awk '
         /───/ { rows = 1; next }
         rows && !NF { exit }
         rows {
@@ -49,6 +49,13 @@ profiles() {
             if (match(label, /\([^()]+\)$/)) label = substr(label, RSTART + 1, RLENGTH - 2)
             print label
         }'
+}
+
+# True when the profile already runs this release's observer, enabled.
+current() {
+    hermes -p "$1" plugins list --json </dev/null 2>/dev/null | tr -d '\n' \
+        | grep -o "\"name\": *\"$PLUGIN\"[^}]*" | grep "\"status\": *\"enabled\"" \
+        | grep -q "pinned@$(printf '%s' "$COMMIT" | cut -c1-8)"
 }
 
 # Quits the app running from this directory (a build elsewhere is left alone) and deletes it.
@@ -77,16 +84,26 @@ install() {
     [ -d "$work/unpacked/$APP" ] || die "the download holds no $APP."
 
     for name in $names; do
+        if current "$name"; then
+            say "Hermes profile $name is already connected."
+            continue
+        fi
         say "Connecting Hermes profile ${name}…"
-        hermes -p "$name" plugins install "$plugin_source" --ref "$COMMIT" --enable --force >"$work/hermes.log" 2>&1 \
+        hermes -p "$name" plugins install "$plugin_source" --ref "$COMMIT" --enable --force \
+            </dev/null >"$work/hermes.log" 2>&1 \
             || { cat "$work/hermes.log" >&2; die "could not install the observer into profile $name."; }
     done
 
     dir=$(app_dirs | head -n 1)
-    mkdir -p "$dir"
-    remove_app "$dir"
-    mv "$work/unpacked/$APP" "$dir/$APP"
-    say "Installed $dir/$APP and connected:" $names
+    if diff -rq "$work/unpacked/$APP" "$dir/$APP" >/dev/null 2>&1; then
+        say "$dir/$APP is already this version."
+    else
+        mkdir -p "$dir"
+        remove_app "$dir"
+        mv "$work/unpacked/$APP" "$dir/$APP"
+        say "Installed $dir/$APP."
+    fi
+    say "Connected:" $names
     [ -n "${HERMES_CONTEXT_NO_OPEN:-}" ] || open "$dir/$APP"
 }
 
@@ -94,12 +111,12 @@ uninstall() {
     purge=$1
     if has_hermes; then
         for name in $(profiles); do
-            if hermes -p "$name" plugins show "$PLUGIN" >/dev/null 2>&1; then
+            if hermes -p "$name" plugins show "$PLUGIN" </dev/null >/dev/null 2>&1; then
                 say "Disconnecting Hermes profile ${name}…"
-                hermes -p "$name" plugins remove "$PLUGIN" >/dev/null
+                hermes -p "$name" plugins remove "$PLUGIN" </dev/null >/dev/null
             fi
             if [ "$purge" = yes ]; then
-                home=$(hermes profile show "$name" | awk '$1 == "Path:" { sub(/^Path:[ ]+/, ""); print; exit }')
+                home=$(hermes profile show "$name" </dev/null | awk '$1 == "Path:" { sub(/^Path:[ ]+/, ""); print; exit }')
                 [ -z "$home" ] || rm -rf "$home/hermes-context"
             fi
         done

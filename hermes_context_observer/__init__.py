@@ -205,13 +205,14 @@ def _known_lanes(routing_home: Path, home: Path, profile: str) -> list[KnownLane
                     continue
                 # The latest request's model route, else the session row's (which mixes route changes).
                 model_route = db.get_recent_session_model_route(entry.session_id) or session
-                key = tuple(str(model_route.get(name) or "") for name in ("model", "billing_provider", "billing_base_url"))
-                if key not in maximums:
-                    maximums[key] = _context_maximum(*key)
+                model, provider, base_url = (str(model_route.get(name) or "")
+                                             for name in ("model", "billing_provider", "billing_base_url"))
+                if (model, provider, base_url) not in maximums:
+                    maximums[model, provider, base_url] = _context_maximum(model, provider, base_url)
                 lanes.append(KnownLane(
-                    route, entry.session_id, model=key[0] or None, provider=key[1] or None,
+                    route, entry.session_id, model=model or None, provider=provider or None,
                     used=entry.last_prompt_tokens or None,  # Zero means no request yet.
-                    maximum=maximums[key], at=timestamp(entry.updated_at),  # Naive local time.
+                    maximum=maximums[model, provider, base_url], at=timestamp(entry.updated_at),  # Naive local time.
                 ))
         return lanes
     except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error) as exc:
