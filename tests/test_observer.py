@@ -10,7 +10,7 @@ from pathlib import Path
 
 from conftest import read_snapshot
 from hermes_context_observer.contract import effective_freshness, validate_snapshot
-from hermes_context_observer.observer import Observer, Route
+from hermes_context_observer.observer import KnownLane, Observer, Route
 
 
 def discord_route(profile: str, thread: str, name: str) -> Route:
@@ -240,3 +240,36 @@ def test_atomic_replacement_never_exposes_partial_json(tmp_path: Path, fixed_tim
 
     assert failures == []
     assert not list(path.parent.glob("*.tmp"))
+
+
+def test_backfill_keeps_held_rows_and_only_the_gateway_reads_the_index(tmp_path: Path, fixed_times):
+    route = discord_route("alpha", "thread-1", "Held lane")
+    lanes = lambda: [
+        KnownLane(route, "index-session", "m", "p", used=90, maximum=100, at=fixed_times["t1"]),
+        KnownLane(discord_route("alpha", "thread-2", "New lane"), "new-session", "m", "p", used=None, maximum=0,
+                  at=fixed_times["t1"]),
+        KnownLane(discord_route("beta", "thread-3", "Other profile"), "beta-session", None, None, used=5, maximum=10,
+                  at=fixed_times["t1"]),
+    ]
+
+    def unread():
+        raise AssertionError("a CLI process must not read the routing index")
+
+    Observer(tmp_path, "alpha", gateway_owner=lambda: False).backfill(unread)
+    observer = Observer(tmp_path, "alpha")
+    observer.request_completed(route, "live-session", request_id="r1", used=10, maximum=100,
+                               source="provider_reported", model="m", provider="p", at=fixed_times["t0"])
+    observer.backfill(lanes)
+    rows = {row["display_name"]: row for row in read_snapshot(tmp_path)["sessions"]}
+    assert set(rows) == {"Held lane", "New lane"}
+    assert (rows["Held lane"]["session_id"], rows["Held lane"]["context"]["used"]) == ("live-session", 10)
+    assert (rows["New lane"]["state"], rows["New lane"]["timing"]["last_activity_at"]) == ("idle", fixed_times["t1"])
+
+
+def test_stale_rows_stay_idle_when_the_first_transaction_writes_nothing(tmp_path: Path):
+    route = discord_route("alpha", "thread-1", "Lane")
+    Observer(tmp_path, "alpha").session_started(route, "s1", at="2020-01-01T00:00:00.000Z")  # Working, then the gateway died.
+    restarted = Observer(tmp_path, "alpha")
+    restarted.session_reset("unknown", "other")  # Matches no lane, so it publishes nothing.
+    restarted.heartbeat()
+    assert read_snapshot(tmp_path)["sessions"][0]["state"] == "idle"

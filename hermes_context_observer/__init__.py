@@ -11,10 +11,10 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .contract import CHANNEL_LABEL_MAX
-from .observer import Observer, Route
+from .observer import KnownLane, Observer, Route, timestamp
 
 
 def _session_value(name: str) -> str:
@@ -46,16 +46,15 @@ def _clean(value: Any) -> str | None:
     return text[:CHANNEL_LABEL_MAX] or None
 
 
-def _discord_channel(home: Path, channel_id: str) -> tuple[str | None, str | None]:
-    """(channel name, guild name) from this profile's read-only gateway channel directory."""
+def _discord_channels(home: Path) -> dict[str, tuple[str | None, str | None]]:
+    """Channel ID → (channel name, guild name) from this profile's read-only gateway channel directory."""
     try:
         entries = json.loads((home / "channel_directory.json").read_text(encoding="utf-8"))["platforms"]["discord"]
     except (OSError, ValueError, KeyError, TypeError):
-        return None, None
-    for entry in entries if isinstance(entries, list) else []:
-        if isinstance(entry, dict) and not entry.get("thread_id") and str(entry.get("id")) == channel_id:
-            return _clean(entry.get("name")), _clean(entry.get("guild"))
-    return None, None
+        return {}
+    return {str(entry.get("id")): (_clean(entry.get("name")), _clean(entry.get("guild")))
+            for entry in (entries if isinstance(entries, list) else [])
+            if isinstance(entry, dict) and not entry.get("thread_id")}
 
 
 def _thread_name(chat_name: str, channel: str | None, guild: str | None) -> str:
@@ -76,30 +75,45 @@ def _route(profile: str, home: Path) -> Route | None:
 
     if is_delegated_child_process_context():
         return None  # A child borrows its parent's Discord route, not its generation.
-    platform = _session_value("HERMES_SESSION_PLATFORM").strip().lower()
-    chat_id = _session_value("HERMES_SESSION_CHAT_ID").strip()
+    source = {name: _session_value(f"HERMES_SESSION_{name.upper()}")
+              for name in ("platform", "chat_id", "thread_id", "parent_chat_id", "chat_name", "scope_id")}
+    return _discord_route(profile, source, _discord_channels(home),
+                          title=lambda: _conversation_title(home, _session_value("HERMES_SESSION_ID").strip()),
+                          session_key=_session_value("HERMES_SESSION_KEY").strip() or None)
+
+
+def _discord_route(profile: str, source: dict[str, Any], channels: dict[str, tuple[str | None, str | None]], *,
+                   title: Callable[[], str | None], session_key: str | None) -> Route | None:
+    """A Route from Hermes's session source fields, whether bound to this task or saved in the routing index.
+
+    A thread is named after its Discord thread; an unthreaded lane asks `title` for Hermes's generated title.
+    """
+    def value(name: str) -> str:
+        raw = source.get(name)
+        return str(raw).strip() if raw is not None else ""
+
+    platform = value("platform").lower()
+    chat_id = value("chat_id")
     if platform != "discord" or not chat_id:
         return None
-    thread_id = _session_value("HERMES_SESSION_THREAD_ID").strip() or None
-    parent_chat_id = _session_value("HERMES_SESSION_PARENT_CHAT_ID").strip() or None
-    channel_id = parent_chat_id or chat_id
-    channel, guild = _discord_channel(home, channel_id)
+    thread_id = value("thread_id") or None
+    channel_id = value("parent_chat_id") or chat_id
+    channel, guild = channels.get(channel_id, (None, None))
     if thread_id:
-        raw = _session_value("HERMES_SESSION_CHAT_NAME").strip()
+        raw = value("chat_name")
         chat_name = _clean(_thread_name(raw, channel, guild)) if raw else None
     else:
-        chat_name = _conversation_title(home, _session_value("HERMES_SESSION_ID").strip())
-    guild_id = _session_value("HERMES_SESSION_SCOPE_ID").strip() or None
+        chat_name = title()
     return Route(
         profile=profile,
         platform=platform,
         chat_id=chat_id,
         thread_id=thread_id,
-        guild_id=guild_id,
+        guild_id=value("scope_id") or None,
         channel_id=channel_id,
         display_name=chat_name,
         channel_label=_clean(f"#{channel}") if channel and guild else channel,
-        session_key=_session_value("HERMES_SESSION_KEY").strip() or None,
+        session_key=session_key,
     )
 
 
@@ -135,21 +149,74 @@ def _compression_chain(home: Path, session_id: str) -> tuple[str, ...]:
         logging.getLogger(__name__).warning("Compression lineage unavailable for %s in %s: %s", session_id, home, exc)
         return ()
 
+
+def _routing_entries(home: Path) -> list[dict[str, Any]]:
+    """The gateway's routing index: one saved session entry per routing key."""
+    from hermes_state import SessionDB
+
+    with SessionDB(home / "state.db", read_only=True) as db:
+        return [json.loads(row["entry_json"]) for row in db.list_gateway_routing_rows()]
+
+
 def _route_owner(home: Path, route: Route, session_id: str) -> bool:
     """The gateway's current routing index, not the borrowed task-local session ID."""
     if not route.session_key:
         return False
     try:
-        from hermes_state import SessionDB
-
-        with SessionDB(home / "state.db", read_only=True) as db:
-            rows = db.list_gateway_routing_rows()
-        owners = {json.loads(row["entry_json"]).get("session_id") for row in rows
-                  if row["session_key"] == route.session_key}
+        owners = {entry.get("session_id") for entry in _routing_entries(home)
+                  if entry.get("session_key") == route.session_key}
         return owners == {session_id}
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         logging.getLogger(__name__).warning("Gateway routing ownership unavailable in %s: %s", home, exc)
         return False
+
+
+def _known_lanes(routing_home: Path, home: Path, profile: str) -> list[KnownLane]:
+    """Discord lanes the gateway already routes for this profile, with Hermes's last prompt size.
+
+    A multiplexed gateway keeps every profile's lanes in one index, so a lane is this profile's
+    only when its session lives in this profile's own state database.
+    """
+    if not ((routing_home / "state.db").is_file() and (home / "state.db").is_file()):
+        return []  # No gateway has routed anything yet.
+    try:
+        from gateway.session import SessionEntry
+        from hermes_state import SessionDB
+
+        entries = []
+        for raw in _routing_entries(routing_home):
+            try:
+                entry = SessionEntry.from_dict(raw)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not entry.expiry_finalized and entry.origin and entry.origin.platform.value == "discord":
+                entries.append(entry)
+        channels = _discord_channels(home)
+        maximums: dict[tuple[str, str, str], int] = {}
+        lanes = []
+        with SessionDB(home / "state.db", read_only=True) as db:
+            for entry in entries:
+                session = db.get_session(entry.session_id)
+                if session is None:
+                    continue  # Another profile's lane.
+                route = _discord_route(profile, entry.origin.to_dict(), channels,
+                                       title=lambda: session.get("title") or None, session_key=entry.session_key)
+                if route is None:
+                    continue
+                # The latest request's model route, else the session row's (which mixes route changes).
+                model_route = db.get_recent_session_model_route(entry.session_id) or session
+                key = tuple(str(model_route.get(name) or "") for name in ("model", "billing_provider", "billing_base_url"))
+                if key not in maximums:
+                    maximums[key] = _context_maximum(*key)
+                lanes.append(KnownLane(
+                    route, entry.session_id, model=key[0] or None, provider=key[1] or None,
+                    used=entry.last_prompt_tokens or None,  # Zero means no request yet.
+                    maximum=maximums[key], at=timestamp(entry.updated_at),  # Naive local time.
+                ))
+        return lanes
+    except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error) as exc:
+        logging.getLogger(__name__).warning("Routed lanes unavailable for %s: %s", profile, exc)
+        return []
 
 
 def _estimated_tokens(result: Any) -> int:
@@ -307,4 +374,5 @@ def register(ctx) -> None:
     for name, callback in callbacks.items():
         ctx.register_hook(name, callback)
     ctx.on_unload(observer.close)
+    observer.backfill(lambda: _known_lanes(routing_home, home, profile))
     observer.start_heartbeat()

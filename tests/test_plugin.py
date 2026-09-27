@@ -511,3 +511,109 @@ def test_post_tool_call_publishes_sanitized_usage_once(tmp_path: Path, monkeypat
     finally:
         clear_session_vars(tokens)
         context.unload()
+
+
+def test_registration_backfills_routed_discord_lanes_with_last_context(tmp_path: Path, monkeypatch):
+    """A fresh install lists every lane the gateway already routes for this profile, before any new request."""
+    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
+    if not (hermes_source / "hermes_constants.py").is_file():
+        pytest.skip("Hermes source checkout is required for the plugin integration seam")
+    monkeypatch.syspath_prepend(str(hermes_source))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from gateway import status
+    from hermes_state import SessionDB
+    from agent.model_metadata import save_context_length
+    monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
+    base_url = "https://models.example.test/v1"
+    home = tmp_path / "profiles" / "alpha"
+    home.mkdir(parents=True)
+    write_directory(home, {"id": "chan-1", "name": "ops", "guild": "Guild"},
+                    {"id": "chan-2", "name": "general", "guild": "Guild"})
+    # Hermes stores routing times as naive local wall-clock text.
+    measured = datetime(2026, 9, 27, 10, 0, 0, 123000, tzinfo=timezone.utc)
+    local_text = measured.astimezone().replace(tzinfo=None).isoformat()
+    token = set_hermes_home_override(home)
+    try:
+        save_context_length("m", base_url, 200_000)
+        with SessionDB(home / "state.db") as db:
+            for sid in ("alpha-thread", "alpha-channel", "alpha-telegram", "alpha-finished"):
+                db.create_session(sid, "discord", model="m")
+                db.update_token_counts(sid, input_tokens=10, output_tokens=5, api_call_count=1,
+                                        billing_provider="p", billing_base_url=base_url)
+                db.append_message(sid, "user", content=SENTINEL)
+            db.set_session_title("alpha-channel", "Release planning")
+    finally:
+        reset_hermes_home_override(token)
+    scope = str((tmp_path / "sessions").resolve())
+
+    def route_entry(key, sid, *, last_prompt_tokens=0, finalized=False, **origin):
+        entry = {"session_key": key, "session_id": sid, "platform": origin.get("platform", "discord"),
+                 "origin": {"platform": "discord", "chat_type": "group", "user_id": "u", "user_name": SENTINEL,
+                            "chat_topic": SENTINEL, "profile": "alpha", **origin},
+                 "last_prompt_tokens": last_prompt_tokens, "created_at": local_text, "updated_at": local_text,
+                 "expiry_finalized": finalized}
+        with SessionDB(tmp_path / "state.db") as db:
+            db.save_gateway_routing_entry(key, json.dumps(entry), scope=scope)
+
+    route_entry("agent:alpha:discord:thread:thread-1", "alpha-thread", last_prompt_tokens=50_000,
+                chat_id="thread-1", thread_id="thread-1", parent_chat_id="chan-1", scope_id="guild-1",
+                guild_id="guild-1", chat_name="Guild / #ops / Deploy check", chat_type="thread")
+    route_entry("agent:alpha:discord:group:chan-2", "alpha-channel",
+                chat_id="chan-2", thread_id=None, scope_id="guild-1", guild_id="guild-1", chat_name="Guild / #general")
+    route_entry("agent:beta:discord:thread:thread-9", "beta-thread", last_prompt_tokens=9,
+                chat_id="thread-9", thread_id="thread-9", chat_name="Other profile's lane", profile="beta")
+    route_entry("agent:alpha:telegram:dm:1", "alpha-telegram", last_prompt_tokens=7, platform="telegram",
+                chat_id="1", thread_id=None, chat_name="Telegram DM")
+    route_entry("agent:alpha:discord:thread:thread-5", "alpha-finished", last_prompt_tokens=5, finalized=True,
+                chat_id="thread-5", thread_id="thread-5", chat_name="Finished lane")
+
+    context = FakeContext()
+    token = set_hermes_home_override(home)
+    try:
+        register(context)
+    finally:
+        reset_hermes_home_override(token)
+    try:
+        snapshot = json.loads((home / "hermes-context/v1/snapshot.json").read_text())
+        validate_snapshot(snapshot)
+        rows = {row["session_id"]: row for row in snapshot["sessions"]}
+        assert set(rows) == {"alpha-thread", "alpha-channel"}
+        thread, channel = rows["alpha-thread"], rows["alpha-channel"]
+        assert thread["display_name"] == "Deploy check"
+        assert thread["discord_route"] == {"guild_id": "guild-1", "channel_id": "chan-1", "thread_id": "thread-1",
+                                           "channel_label": "#ops"}
+        assert (thread["state"], thread["current_tool"], thread["model"], thread["provider"]) == ("idle", None, "m", "p")
+        assert thread["context"] == {"used": 50_000, "maximum": 200_000, "percentage": 25.0,
+                                     "source": "provider_reported", "measured_at": "2026-09-27T10:00:00.123Z"}
+        assert thread["timing"] == {"turn_started_at": None, "last_activity_at": "2026-09-27T10:00:00.123Z"}
+        assert (thread["lineage_root_id"], thread["previous_session_id"]) == ("alpha-thread", None)
+        assert channel["display_name"] == "Release planning"
+        assert channel["discord_route"] == {"guild_id": "guild-1", "channel_id": "chan-2", "thread_id": None,
+                                            "channel_label": "#general"}
+        assert channel["context"] == {"used": None, "maximum": None, "percentage": None, "source": None,
+                                      "measured_at": None}
+        assert not list((home / "hermes-context/v1/events").glob("*/*.json"))
+
+        # The live path lands on the backfilled row: same routing identity, no second row.
+        token = set_hermes_home_override(home)
+        vars_token = set_session_vars(platform="discord", chat_id="thread-1", thread_id="thread-1",
+                                      parent_chat_id="chan-1", scope_id="guild-1",
+                                      chat_name="Guild / #ops / Deploy check",
+                                      session_key="agent:alpha:discord:thread:thread-1", session_id="alpha-thread")
+        try:
+            context.hooks["post_api_request"](session_id="alpha-thread", api_request_id="r1", model="m", provider="p",
+                                              base_url=base_url, usage={"prompt_tokens": 60_000})
+        finally:
+            clear_session_vars(vars_token)
+            reset_hermes_home_override(token)
+        after = json.loads((home / "hermes-context/v1/snapshot.json").read_text())["sessions"]
+        assert len(after) == 2
+        assert {row["session_id"]: row["context"]["used"] for row in after} == {"alpha-thread": 60_000,
+                                                                               "alpha-channel": None}
+        for path in (home / "hermes-context").rglob("*"):
+            if path.is_file():
+                assert SENTINEL.encode() not in path.read_bytes(), path
+    finally:
+        context.unload()

@@ -68,6 +68,18 @@ class Route:
         return self.display_name or f"{self.profile} {self.platform} session"
 
 
+@dataclass(frozen=True)
+class KnownLane:
+    """A lane the gateway already routes, with Hermes's last provider-reported prompt size."""
+    route: Route
+    session_id: str
+    model: str | None
+    provider: str | None
+    used: int | None
+    maximum: int
+    at: str
+
+
 class SnapshotStore:
     """Atomic replace-only writer; a stable lock serializes same-home writers."""
 
@@ -184,15 +196,23 @@ class Observer:
                 self._load_lanes(saved)
                 self._heartbeat_at = saved["gateway"]["heartbeat_at"]
                 if saved["gateway"]["heartbeat_at"] == self._recovery_heartbeat:
+                    # Until a write lands, every transaction repeats the reset: one that publishes
+                    # nothing must not let stale in-flight rows back out under a fresh heartbeat.
                     for row in self._lanes.values():
                         row["state"] = "idle"
                         row["current_tool"] = None
                         row["timing"]["turn_started_at"] = None
-            self._recovery_heartbeat = None
             yield
 
     def _empty_context(self) -> dict[str, Any]:
         return {"used": None, "maximum": None, "percentage": None, "source": None, "measured_at": None}
+
+    def _provider_context(self, used: int | None, maximum: int | None, source: str | None,
+                          moment: str) -> dict[str, Any]:
+        if type(used) is int and used >= 0 and type(maximum) is int and maximum > 0 and source:
+            return {"used": used, "maximum": maximum, "percentage": min(100.0, round(used / maximum * 100, 6)),
+                    "source": source, "measured_at": moment}
+        return self._empty_context()
 
     def _new_row(
         self,
@@ -292,6 +312,7 @@ class Observer:
             "sessions": [self._lanes[key] for key in sorted(self._lanes)],
         }
         self.store.write(snapshot)
+        self._recovery_heartbeat = None
 
     def heartbeat(self, at: str | float | datetime | None = None) -> None:
         if not self._gateway_owner():
@@ -452,10 +473,7 @@ class Observer:
             row = self._owning_row(route, session_id, at=moment, model=model, provider=provider)
             if row is None:
                 return
-            measured = (type(used) is int and used >= 0 and type(maximum) is int and maximum > 0
-                        and bool(source))
-            context = ({"used": used, "maximum": maximum, "percentage": min(100.0, round(used / maximum * 100, 6)),
-                        "source": source, "measured_at": moment} if measured else self._empty_context())
+            context = self._provider_context(used, maximum, source, moment)
             event = self._event(
                 "model_request", request_identity(route.profile, session_id, request_id), route, row, session_id, moment,
                 model=model or row["model"], provider=provider or row["provider"], state="working", context=context,
@@ -525,6 +543,32 @@ class Observer:
         """The lane's current generation, else an ended generation this lane recorded; unknown IDs get nothing."""
         row = self._ensure_row(route, session_id, at=at, model=model, provider=provider)
         return row if row is not None else self.events.generation(route.routing_id, session_id)
+
+    def backfill(self, known_lanes: Callable[[], list[KnownLane]]) -> None:
+        """Add a row for each lane the gateway already routes, so a fresh install lists it before its next request.
+
+        Rows already held win. Only the gateway owner reads the lanes; no event is written, since no request ran.
+        """
+        if not self._gateway_owner():
+            return
+        lanes = known_lanes()
+        if not lanes:
+            return
+        with self._transaction():
+            added = False
+            for lane in lanes:
+                route = lane.route
+                if route.profile != self.profile or route.routing_id in self._lanes:
+                    continue
+                known = self.events.generation(route.routing_id, lane.session_id) or {}
+                row = self._new_row(route, lane.session_id, model=lane.model, provider=lane.provider, at=lane.at,
+                                    previous_session_id=known.get("previous_session_id"),
+                                    lineage_root_id=known.get("lineage_root_id"), state="idle")
+                row["context"] = self._provider_context(lane.used, lane.maximum, "provider_reported", lane.at)
+                self._lanes[route.routing_id] = row
+                added = True
+            if added:
+                self._publish(timestamp())
 
     def start_heartbeat(self) -> None:
         with self._lock:
