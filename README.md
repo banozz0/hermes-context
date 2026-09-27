@@ -1,6 +1,22 @@
 # Hermes Context
 
-Standalone observer plugin, v1 file contract, and the native macOS menu-bar app that reads it. This workspace does **not** install or enable the plugin in any live gateway.
+Standalone observer plugin, v1 file contract, and the native macOS menu-bar app that reads it. The tests never install or enable the plugin in a live gateway; `install.sh` does, on purpose.
+
+## Install
+
+```sh
+curl -fsSL https://github.com/banozz0/hermes-context/releases/latest/download/install.sh | sh
+```
+
+It needs macOS 14 or later and a `hermes` command on the PATH, and stops before changing anything when either is missing. It downloads the release's app into `/Applications` (else `~/Applications`), runs `hermes -p <profile> plugins install banozz0/hermes-context/hermes_context_observer --ref <commit> --enable --force` for every profile `hermes profile list` shows, default included, and opens the app. An enabled plugin loads into a running gateway without a restart. Because curl sets no quarantine flag, Gatekeeper never blocks the ad-hoc signed app. Run the same line again to connect a profile added later or to update; app and plugin always come from the one commit the release stamped into the script.
+
+```sh
+curl -fsSL https://github.com/banozz0/hermes-context/releases/latest/download/install.sh | sh -s -- --uninstall [--purge]
+```
+
+Uninstall removes the plugin from every profile and deletes the app. History (`~/Library/Application Support/dev.banozz0.hermes-context`) and each profile's bridge files stay unless `--purge` is given.
+
+`release.sh` builds a release from a committed tree into `app/build/release`: the universal (Apple silicon and Intel), ad-hoc signed app as `HermesContext.zip`, and `install.sh` stamped with the version from `pyproject.toml` and the current commit. Publishing those two files as GitHub Release `v<version>` is a separate step. For a local build or a throwaway Hermes home, `HERMES_CONTEXT_PLUGIN_SOURCE` (a `file://<repo>#hermes_context_observer` URL), `HERMES_CONTEXT_APP_ZIP` (a local zip), `HERMES_CONTEXT_INSTALL_DIR` and `HERMES_CONTEXT_NO_OPEN=1` override the defaults.
 
 ## Contract
 
@@ -70,5 +86,5 @@ The chart button in the popover footer (⌘I), or Settings › History, opens In
 Check it:
 
 - `swift test --package-path app`: decoder, list, bridge, details, Discord routing, offline, recovery, settings persistence and menu-status tests against the shared `fixtures/v1` files, including an FSEvents test on an atomic rename and ten malformed-file cases. `TelemetryStoreTests` publishes `fixtures/v1/events/replay.json` into a temporary Hermes root and imports it into a temporary database. They cover first import, replay, relaunch, a rebuilt event tree, tool calls linked to their request and generation, a tool call carrying arguments, a result or an error message (rejected, with a byte scan), the schema 1 → 2 migration, an interrupted batch, two files on one sequence number, segment rotation, gaps and rejected records (with a byte scan for their contents), the default profile, the schema allowlist and file modes, lineage grouping and a newer schema. `InsightsTests` imports fixed, hand-checkable observations and checks exact count, mean, median and peak per generation, profile and overall, the CSV and JSON field sets (and this README listing each one), quoting and timestamps, and a clear that covers events not imported yet, keeps the cursors, leaves every bridge file byte-identical and leaves no deleted byte or free page in the database. `TelemetrySyncTests` (app target) checks which runs may keep history, burst coalescing, and a skipped record reaching the diagnostics through `LiveStore.reload`. `InsightsSmokeTests` opens the Insights window from the popover's ⌘I, reads its tables, clicks through the clear confirmation (Cancel changes nothing), exports through the running store, shows History unavailable for a database that cannot open and for an import blocked by another connection's write lock, and rebuilds the statistics after an import that failed partway. `HermesContextAppTests` hosts the real popover, first-run, Settings and menu-bar label views in a window that is never ordered in, renders them to a bitmap and reads the drawn text back with Vision; clicks (the mode switch, the first-run buttons) order that window in fully transparent and blind to the real mouse, then send mouse events at the text Vision located. Settings tests use per-test `dev.banozz0.hermes-context.tests.*` defaults domains and a fake login item. `HERMES_CONTEXT_TEST_RENDERS=<dir>` keeps every rendered bitmap as a PNG.
-- `app/bundle.sh` builds and ad-hoc signs `app/build/HermesContext.app`.
+- `app/bundle.sh` builds and ad-hoc signs `app/build/HermesContext.app` (`UNIVERSAL=1` for Apple silicon and Intel, `OUT=<dir under app/>` elsewhere). `tests/test_installer.py` runs `install.sh` from stdin, as `curl | sh` does, with the real `hermes` CLI against a throwaway `HERMES_HOME` and `HOME`: install into two profiles, a no-op rerun, uninstall keeping history and bridge files, purge, and a preflight that stops without Hermes or on macOS below 14.
 - Headless launch, for agents (never draws on screen): `HERMES_CONTEXT_HEADLESS=1 HERMES_CONTEXT_HERMES_ROOT=<temp root> HERMES_CONTEXT_CHECK_OUTPUT=<file> HERMES_CONTEXT_CHECK_SECONDS=5 app/build/HermesContext.app/Contents/MacOS/HermesContext` hides the menu-bar item, rewrites `<file>` after every reload with the merged list as `current` and `hidden` rows (each with its `offline` flag, `details` fields and `discord` link), the bridge `diagnostics`, the `menu` item (title, symbol, working count, warned routing IDs), the `settings` it read and the Insights `history` (`off`, `loading`, `unavailable` with its reason, or `ready` with overall, per-profile and per-generation statistics), and quits itself. Add `HERMES_CONTEXT_DEFAULTS_SUITE=<name>` to read settings from a throwaway defaults domain instead of the app's own, and `HERMES_CONTEXT_DATABASE=<file>` to import the root's events into a throwaway database (check it with `sqlite3`). Headless runs never touch the login item.
