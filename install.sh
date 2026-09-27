@@ -92,6 +92,8 @@ install() {
         hermes -p "$name" plugins install "$plugin_source" --ref "$COMMIT" --enable --force \
             </dev/null >"$work/hermes.log" 2>&1 \
             || { cat "$work/hermes.log" >&2; die "could not install the observer into profile $name."; }
+        # Hermes asks a running gateway to reload; when none answers it says to restart instead.
+        ! grep -q "hermes gateway restart" "$work/hermes.log" || unloaded="${unloaded:-} $name"
     done
 
     dir=$(app_dirs | head -n 1)
@@ -104,6 +106,7 @@ install() {
         say "Installed $dir/$APP."
     fi
     say "Connected:" $names
+    [ -z "${unloaded:-}" ] || say "No running gateway loaded the observer for:${unloaded}. Run \`hermes gateway restart\` to start it."
     [ -n "${HERMES_CONTEXT_NO_OPEN:-}" ] || open "$dir/$APP"
 }
 

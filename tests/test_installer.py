@@ -83,8 +83,11 @@ def real_hermes_plugins() -> dict[str, float]:
 
 def test_install_rerun_uninstall_and_purge(world: dict):
     before = real_hermes_plugins()
-    ok(world)
+    installed = run(world)
+    assert installed.returncode == 0, installed.stderr
     assert statuses(world) == dict.fromkeys(world["homes"], "enabled")
+    # No gateway runs in the throwaway home, so Hermes's restart hint reaches the user.
+    assert "No running gateway loaded the observer for: default alpha." in installed.stdout
     assert (world["install_dir"] / APP / "Contents" / "MacOS" / "HermesContext").is_file()
     files = plugin_files(world)
     assert files["profiles/alpha/plugins/hermes-context-observer/observer.py"] == (
@@ -94,7 +97,8 @@ def test_install_rerun_uninstall_and_purge(world: dict):
     placed = binary.stat().st_ino
     rerun = run(world)
     assert rerun.returncode == 0, rerun.stderr
-    assert "Hermes profile alpha is already connected." in rerun.stdout
+    assert all(f"Hermes profile {profile} is already connected." in rerun.stdout for profile in world["homes"])
+    assert "No running gateway" not in rerun.stdout
     assert "is already this version." in rerun.stdout
     assert plugin_files(world) == files
     assert binary.stat().st_ino == placed, "an identical app is left in place"

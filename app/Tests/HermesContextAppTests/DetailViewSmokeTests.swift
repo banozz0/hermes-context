@@ -173,4 +173,25 @@ import Testing
             #expect(!details.contains("Search sessions"))
         }
     }
+
+    /// What agents read without a screen: visible rows under `current`, idle lanes past the hide age under
+    /// `hidden`, and the setting that decided it.
+    @Test func headlessOutputSplitsVisibleAndHiddenLanes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hermes-context-headless-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("profiles/gamma/hermes-context/v1", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(contentsOf: Self.fixtures.appendingPathComponent("list/gamma.snapshot.json"))
+            .write(to: directory.appendingPathComponent("snapshot.json"))
+        let output = root.appendingPathComponent("check.json")
+        try withSettings { settings, _ in
+            let check = HeadlessCheck(output: output, seconds: nil, defaultsSuite: nil)
+            LiveStore(location: BridgeLocation(root: root), settings: settings, check: check, clock: { Self.now }).reload()
+            let body = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: output)) as? [String: Any])
+            func names(_ key: String) -> [String] { (body[key] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String } }
+            #expect(names("current") == ["Deploy review", "Refactor docs", "Scratch notes"])
+            #expect(names("hidden") == ["Weekly planning"])
+            #expect((body["settings"] as? [String: Any])?["hide_after_hours"] as? Int == 24)
+        }
+    }
 }
