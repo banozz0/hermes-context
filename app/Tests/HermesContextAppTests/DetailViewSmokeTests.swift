@@ -106,11 +106,12 @@ import Testing
     }
 
     /// Vision confuses i, l, 1 and | at caption size, stutters them around an "ffl" ligature ("offililne"),
-    /// sometimes drops a middle dot, reads an ellipsis as three dots, and may split a grid row into two observations;
+    /// sometimes drops a middle dot or reads it as a spaced hyphen, reads an ellipsis as three dots, and may split
+    /// a grid row into two observations;
     /// fold all of that on both sides of a comparison.
     static func fold(_ text: String) -> String {
         var folded = ""
-        for character in text.replacingOccurrences(of: "…", with: "...") where character != "·" {
+        for character in text.replacingOccurrences(of: "…", with: "...").replacingOccurrences(of: " - ", with: " ") where character != "·" {
             let mapped: Character = "il1|I".contains(character) ? "l" : character
             if mapped == "l", folded.last == "l" { continue }
             folded.append(mapped)

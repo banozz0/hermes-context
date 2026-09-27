@@ -91,6 +91,25 @@ import Testing
         }
     }
 
+    /// The menu-bar window can size the popover down to its minimum; the list and details must still draw there.
+    @Test func panesDrawAtThePopoversMinimumSize() throws {
+        let root = try Self.liveRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try withSettings { settings, _ in
+            let store = Self.store(root, settings)
+            @MainActor func textsAtMinimum() throws -> String {
+                let minimum = NSHostingController(rootView: Self.popover(store)).sizeThatFits(in: .zero)
+                return UI.fold(try UI.texts(Self.popover(store), size: NSSize(width: 360, height: minimum.height)).joined(separator: "\n"))
+            }
+            let list = try textsAtMinimum()
+            for lane in ["Second thread", "Deploy review"] {
+                #expect(list.contains(UI.fold(lane)), "\(lane) missing: \(list)")
+            }
+            store.selection = try #require(store.list.current.first { $0.displayName == "Deploy review" }).id
+            #expect(try textsAtMinimum().contains(UI.fold("Needs attention")))
+        }
+    }
+
     @Test func menuBarLabelShowsTheWorkingCount() throws {
         let root = try Self.liveRoot()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -24,6 +24,8 @@ struct PopoverView: View {
             }
         }
         .frame(width: 360)
+        // The menu-bar window may size the popover to its minimum, where a ScrollView collapses to nothing.
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
