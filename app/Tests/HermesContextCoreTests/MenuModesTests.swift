@@ -23,6 +23,8 @@ import Testing
             let settings = AppSettings(defaults: try #require(UserDefaults(suiteName: suite)))
             #expect(settings.viewMode == .liveStatus)
             #expect(settings.threshold == 30)
+            #expect(settings.hideAfterHours == 24)
+            #expect(settings.hideAfter == 24 * 3600)
             #expect(settings.needsFirstRun)
             #expect(settings.launchAtLoginChoice == nil)
         }
@@ -33,12 +35,14 @@ import Testing
             let first = AppSettings(defaults: try #require(UserDefaults(suiteName: suite)))
             first.viewMode = .minimal
             first.threshold = 45
+            first.hideAfterHours = 6
             first.recordLaunchAtLogin(false)
 
             // A new process reads the domain from disk, not this instance's memory.
             let relaunched = AppSettings(defaults: try #require(UserDefaults(suiteName: suite)))
             #expect(relaunched.viewMode == .minimal)
             #expect(relaunched.threshold == 45)
+            #expect(relaunched.hideAfterHours == 6)
             #expect(relaunched.launchAtLoginChoice == false)
             #expect(!relaunched.needsFirstRun)
 
@@ -60,12 +64,18 @@ import Testing
             #expect(settings.threshold == 100)
             settings.threshold = .nan
             #expect(settings.threshold == 30)
+            settings.hideAfterHours = 0
+            #expect(settings.hideAfterHours == 1)
+            settings.hideAfterHours = 500
+            #expect(settings.hideAfterHours == 168)
 
             defaults.set("dashboard", forKey: AppSettings.Key.viewMode)
             defaults.set(-5.0, forKey: AppSettings.Key.threshold)
+            defaults.set(9_999, forKey: AppSettings.Key.hideAfterHours)
             let reread = AppSettings(defaults: defaults)
             #expect(reread.viewMode == .liveStatus)
             #expect(reread.threshold == 1)
+            #expect(reread.hideAfterHours == 168)
         }
     }
 
@@ -107,8 +117,8 @@ import Testing
         #expect(quiet.symbol == "bubble.left.and.text.bubble.right")
     }
 
-    /// Any session over the threshold warns, including an idle lane collapsed under Older; an unmeasured lane never does.
-    @Test func olderLaneOverThresholdWarnsAndUnmeasuredNeverDoes() throws {
+    /// A visible session over the threshold warns; a hidden lane is closed and never warns, nor does an unmeasured one.
+    @Test func hiddenLaneOverThresholdNeverWarnsAndUnmeasuredNeverDoes() throws {
         let gamma = try Fixtures.live(Fixtures.gamma) { object in
             var sessions = object["sessions"] as! [[String: Any]]
             for index in sessions.indices where sessions[index]["display_name"] as? String == "Weekly planning" {
@@ -120,15 +130,17 @@ import Testing
             object["sessions"] = sessions
         }
         let list = SessionList(snapshots: [gamma], now: Fixtures.now)
-        #expect(list.older.map(\.displayName) == ["Weekly planning"])
-        #expect(list.older.first?.context.percentage == 90)
+        #expect(list.hidden.map(\.displayName) == ["Weekly planning"])
+        #expect(list.hidden.first?.context.percentage == 90)
         let status = MenuStatus(list: list, threshold: 30)
-        #expect(status.warnings.map(\.displayName) == ["Weekly planning", "Refactor docs"], "fullest first, Older included")
+        #expect(status.warnings.map(\.displayName) == ["Refactor docs"], "the hidden lane is closed")
         #expect(status.isWarning)
         #expect(status.symbol == "exclamationmark.triangle.fill")
         #expect(!status.warnings.contains { $0.displayName == "Scratch notes" }, "no measurement, no warning")
 
-        // With only the Older lane over, the icon still warns.
-        #expect(MenuStatus(list: list, threshold: 50).warnings.map(\.displayName) == ["Weekly planning"])
+        // With only the hidden lane over, the icon stays calm.
+        let calm = MenuStatus(list: list, threshold: 50)
+        #expect(calm.warnings.isEmpty)
+        #expect(!calm.isWarning)
     }
 }

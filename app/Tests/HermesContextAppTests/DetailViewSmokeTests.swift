@@ -152,7 +152,7 @@ import Testing
             try body.write(to: directory.appendingPathComponent("snapshot.json"))
         }
         try withSettings { settings, _ in
-            // An hour after the fixtures: both heartbeats are stale, yet no idle lane has aged into Older.
+            // An hour after the fixtures: both heartbeats are stale, yet no idle lane has aged past the hide age.
             let store = LiveStore(location: BridgeLocation(root: root), settings: settings, check: nil, clock: { Self.now.addingTimeInterval(3_600) })
             store.reload()
 

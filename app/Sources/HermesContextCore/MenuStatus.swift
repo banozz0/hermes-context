@@ -20,7 +20,7 @@ public enum ViewMode: String, CaseIterable, Identifiable, Sendable {
 public struct MenuStatus: Equatable, Sendable {
     /// Working lanes whose gateway is live. An Offline lane's Working is only its last known state.
     public let workingCount: Int
-    /// Every lane, Older included, whose latest occupancy is at or above the threshold, fullest first.
+    /// Every visible lane whose latest occupancy is at or above the threshold, fullest first. A hidden lane is closed.
     public let warnings: [LiveSession]
     public let threshold: Double
 
@@ -29,7 +29,7 @@ public struct MenuStatus: Equatable, Sendable {
     public init(list: SessionList, threshold: Double) {
         self.threshold = threshold
         workingCount = list.current.filter { $0.state == .working && !list.isOffline($0) }.count
-        warnings = list.all
+        warnings = list.current
             .filter { Self.isOver($0, threshold: threshold) }
             .sorted { ($0.context.percentage ?? 0) > ($1.context.percentage ?? 0) }
     }

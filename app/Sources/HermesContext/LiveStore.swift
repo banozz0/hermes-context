@@ -37,10 +37,9 @@ final class LiveStore {
         self.clock = clock
     }
 
-    var list: SessionList { SessionList(snapshots: bridge.snapshots, query: query, now: now) }
-    /// Every lane, ignoring the search box, rebuilt once per reload: the menu icon, warnings and details never
-    /// depend on a query.
-    private(set) var allLanes = SessionList(snapshots: [], now: Date())
+    var list: SessionList { SessionList(snapshots: bridge.snapshots, query: query, now: now, hideAfter: settings.hideAfter) }
+    /// Every lane, ignoring the search box: the menu icon, warnings and details never depend on a query.
+    var allLanes: SessionList { SessionList(snapshots: bridge.snapshots, now: now, hideAfter: settings.hideAfter) }
     var status: MenuStatus { MenuStatus(list: allLanes, threshold: settings.threshold) }
     /// Records the history skipped, per profile, as of the last import.
     private(set) var historyDiagnostics: [BridgeDiagnostic] = []
@@ -48,11 +47,11 @@ final class LiveStore {
     private(set) var history: HistoryState
     var diagnostics: [BridgeDiagnostic] { bridge.diagnostics(now: now) + historyDiagnostics }
 
-    /// The open lane's details, from the full list so a search cannot strand an open pane.
+    /// The open lane's details, from the unsearched list so a search cannot strand an open pane.
     var details: SessionDetails? {
-        guard let selection else { return nil }
-        guard let session = allLanes.all.first(where: { $0.id == selection }) else { return nil }
-        return SessionDetails(session: session, isOffline: allLanes.isOffline(session), now: now)
+        let lanes = allLanes
+        guard let selection, let session = lanes.current.first(where: { $0.id == selection }) else { return nil }
+        return SessionDetails(session: session, isOffline: lanes.isOffline(session), now: now)
     }
 
     func start() {
@@ -62,7 +61,7 @@ final class LiveStore {
         }
         watcher.start()
         self.watcher = watcher
-        // Rows age into Older with no file change, and a missed event must not freeze the list.
+        // Rows hide with age and no file change, and a missed event must not freeze the list.
         tick = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.reload() }
         }
@@ -72,9 +71,8 @@ final class LiveStore {
         importHistory()
         bridge.apply(BridgeReading.read(location))
         now = clock()
-        allLanes = SessionList(snapshots: bridge.snapshots, now: now)
-        // A lane that left must not reopen its pane by surprise if it ever returns.
-        if let selection, !bridge.snapshots.contains(where: { $0.sessions.contains { $0.id == selection } }) {
+        // A lane that left or hid must not reopen its pane by surprise if it ever returns.
+        if let selection, !allLanes.current.contains(where: { $0.id == selection }) {
             self.selection = nil
         }
         record()
@@ -163,11 +161,12 @@ struct HeadlessCheck {
         }
         let body: [String: Any] = [
             "current": list.current.map(row),
-            "older": list.older.map(row),
+            "hidden": list.hidden.map(row),
             "diagnostics": diagnostics.map { ["file": $0.file.path, "profile": $0.profile, "message": $0.message(now: now)] },
             "menu": ["title": status.title, "symbol": status.symbol, "working": status.workingCount, "warnings": status.warnings.map(\.id)],
             "settings": [
                 "view_mode": settings.viewMode.rawValue, "threshold": settings.threshold,
+                "hide_after_hours": settings.hideAfterHours,
                 "launch_at_login_choice": settings.launchAtLoginChoice.map { $0 as Any } ?? NSNull(),
             ],
             "history": Self.history(history),

@@ -25,7 +25,7 @@ struct FirstRunView: View {
     }
 }
 
-/// View mode, context warning threshold, launch at login, the way to history export and clear, and the bridge diagnostics.
+/// View mode, context warning threshold, idle hide age, launch at login, the way to history export and clear, and the bridge diagnostics.
 struct SettingsView: View {
     @Bindable var settings: AppSettings
     let launchAtLogin: LaunchAtLogin
@@ -53,6 +53,17 @@ struct SettingsView: View {
                         .frame(width: 44)
                     Text("%")
                     Stepper("Threshold", value: $settings.threshold, in: AppSettings.thresholdRange, step: 5)
+                        .labelsHidden()
+                }
+                HStack {
+                    Text("Hide idle sessions after")
+                    Spacer()
+                    TextField("Hours", value: $settings.hideAfterHours, format: .number)
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 44)
+                    Text("h")
+                    Stepper("Hours", value: $settings.hideAfterHours, in: AppSettings.hideAfterRange)
                         .labelsHidden()
                 }
                 VStack(alignment: .leading, spacing: 4) {

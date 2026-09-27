@@ -28,7 +28,7 @@ struct PopoverView: View {
 }
 
 /// The list pane: always-on search, the context warning, one flat list of lanes in the chosen view mode,
-/// idle-for-a-day lanes under a collapsed Older. Bridge problems sit above the footer so they are never hidden.
+/// idle lanes past the hide age left out. Bridge problems sit above the footer so they are never hidden.
 struct SessionListView: View {
     @Bindable var store: LiveStore
     let onSettings: () -> Void
@@ -55,7 +55,7 @@ struct SessionListView: View {
             }
             Divider()
             HStack(spacing: 6) {
-                Text("\(list.current.count + list.older.count) sessions")
+                Text("\(list.current.count) sessions")
                     .foregroundStyle(.secondary)
                     .fixedSize()
                 Spacer(minLength: 0)
@@ -79,7 +79,7 @@ struct SessionListView: View {
     }
 }
 
-/// The in-app context warning: every lane, Older included, at or above the threshold, fullest first.
+/// The in-app context warning: every visible lane at or above the threshold, fullest first.
 struct ContextWarningView: View {
     let status: MenuStatus
     static let shown = 3
@@ -115,7 +115,6 @@ struct SessionRowsView: View {
     let mode: ViewMode
     let threshold: Double
     var onSelect: (LiveSession) -> Void = { _ in }
-    @State private var showsOlder = false
 
     var body: some View {
         ScrollView {
@@ -127,18 +126,6 @@ struct SessionRowsView: View {
                         .padding(24)
                 }
                 ForEach(list.current) { row($0) }
-                if !list.older.isEmpty {
-                    // A search must never hide its own matches inside the collapsed group.
-                    DisclosureGroup(isExpanded: Binding(get: { showsOlder || isFiltering }, set: { showsOlder = $0 })) {
-                        ForEach(list.older) { row($0) }
-                    } label: {
-                        Text("Older (\(list.older.count))")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                }
             }
         }
         .frame(maxHeight: 460)

@@ -2,19 +2,22 @@ import Foundation
 
 /// The merged live list: every profile's lanes, one row per routing ID, sorted and searched.
 public struct SessionList: Equatable, Sendable {
-    /// Idle lanes this old move under the collapsed Older section.
-    public static let olderAfter: TimeInterval = 24 * 60 * 60
+    /// Idle lanes this old are hidden until they move again, unless the caller passes its own age.
+    public static let defaultHideAfter: TimeInterval = 24 * 60 * 60
 
+    /// The lanes the popover shows, searched and sorted.
     public let current: [LiveSession]
-    public let older: [LiveSession]
+    /// Idle lanes past the hide age. Hermes never closes a Discord session, so this is how one closes:
+    /// never drawn, searched, counted or warned about. Kept so Insights can still name them.
+    public let hidden: [LiveSession]
     /// Routing IDs whose gateway heartbeat is stale: their rows are the last snapshot, shown Offline.
     public let offline: Set<String>
 
-    public var isEmpty: Bool { current.isEmpty && older.isEmpty }
-    /// Every lane, current then Older.
-    public var all: [LiveSession] { current + older }
+    public var isEmpty: Bool { current.isEmpty }
+    /// Every lane, visible then hidden.
+    public var all: [LiveSession] { current + hidden }
 
-    public init(snapshots: [ProfileSnapshot], query: String = "", now: Date) {
+    public init(snapshots: [ProfileSnapshot], query: String = "", now: Date, hideAfter: TimeInterval = defaultHideAfter) {
         var lanes: [String: LiveSession] = [:]
         var offline: Set<String> = []
         for snapshot in snapshots {
@@ -27,12 +30,16 @@ public struct SessionList: Equatable, Sendable {
             }
         }
         let terms = Self.terms(query)
-        let matching = lanes.values
-            .filter { session in terms.allSatisfy { term in Self.searchFields(session).contains { $0.contains(term) } } }
-            .sorted(by: Self.precedes)
-        self.offline = offline.intersection(matching.map(\.id))
-        current = matching.filter { !Self.isOlder($0, now: now) }
-        older = matching.filter { Self.isOlder($0, now: now) }
+        var current: [LiveSession] = [], hidden: [LiveSession] = []
+        for session in lanes.values.sorted(by: Self.precedes) {
+            if Self.isHidden(session, now: now, after: hideAfter) {
+                hidden.append(session)
+            } else if terms.allSatisfy({ term in Self.searchFields(session).contains { $0.contains(term) } }) {
+                current.append(session)
+            }
+        }
+        (self.current, self.hidden) = (current, hidden)
+        self.offline = offline.intersection((current + hidden).map(\.id))
     }
 
     public func isOffline(_ session: LiveSession) -> Bool { offline.contains(session.id) }
@@ -46,11 +53,11 @@ public struct SessionList: Equatable, Sendable {
         return lhs.id < rhs.id
     }
 
-    /// Only Idle lanes age out; stalled Working or Needs attention lanes stay in view.
-    public static func isOlder(_ session: LiveSession, now: Date) -> Bool {
+    /// Only Idle lanes hide; stalled Working or Needs attention lanes stay in view however old.
+    public static func isHidden(_ session: LiveSession, now: Date, after age: TimeInterval) -> Bool {
         guard session.state == .idle else { return false }
         guard let last = session.lastActivityAt else { return true }
-        return now.timeIntervalSince(last) >= olderAfter
+        return now.timeIntervalSince(last) >= age
     }
 
     /// Search covers session name, profile, model and Discord channel label; never IDs.

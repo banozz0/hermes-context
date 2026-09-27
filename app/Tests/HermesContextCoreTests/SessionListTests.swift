@@ -21,7 +21,7 @@ import Testing
             "alpha/First thread",    // idle, 10:04
             "gamma/Scratch notes",   // idle, 23.5 hours ago
         ])
-        #expect(names(list.older) == ["gamma/Weekly planning"])
+        #expect(names(list.hidden) == ["gamma/Weekly planning"])
     }
 
     @Test func oneProfileInTwoThreadsIsTwoRows() throws {
@@ -68,34 +68,63 @@ import Testing
         #expect(!list.current.contains { $0.sessionID == "alpha-1" })
     }
 
-    @Test func idleLanesMoveToOlderAtExactlyTwentyFourHours() throws {
+    @Test func idleLanesHideAtExactlyTwentyFourHoursByDefault() throws {
         let gamma = try Fixtures.snapshot(Fixtures.gamma)
         let scratch = try #require(gamma.sessions.first { $0.displayName == "Scratch notes" })
         let lastActivity = try #require(scratch.lastActivityAt)
 
-        let justBefore = SessionList(snapshots: [gamma], now: lastActivity.addingTimeInterval(SessionList.olderAfter - 1))
+        #expect(SessionList.defaultHideAfter == 24 * 3600)
+        let justBefore = SessionList(snapshots: [gamma], now: lastActivity.addingTimeInterval(SessionList.defaultHideAfter - 1))
         #expect(justBefore.current.contains { $0.id == scratch.id })
 
-        let atBoundary = SessionList(snapshots: [gamma], now: lastActivity.addingTimeInterval(SessionList.olderAfter))
-        #expect(atBoundary.older.contains { $0.id == scratch.id })
+        let atBoundary = SessionList(snapshots: [gamma], now: lastActivity.addingTimeInterval(SessionList.defaultHideAfter))
+        #expect(!atBoundary.current.contains { $0.id == scratch.id })
+        #expect(atBoundary.hidden.contains { $0.id == scratch.id })
     }
 
-    @Test func stalledWorkNeverAgesIntoOlder() throws {
+    @Test func theHideAgeIsTheCallersSetting() throws {
+        // Scratch notes last moved 23.5 hours before `now`: visible at the default, hidden at one hour.
         let gamma = try Fixtures.snapshot(Fixtures.gamma)
-        let muchLater = SessionList(snapshots: [gamma], now: Fixtures.now.addingTimeInterval(7 * 86_400))
+        let oneHour = SessionList(snapshots: [gamma], now: Fixtures.now, hideAfter: 3600)
+        #expect(names(oneHour.hidden) == ["gamma/Scratch notes", "gamma/Weekly planning"])
+        #expect(names(oneHour.current) == ["gamma/Deploy review", "gamma/Refactor docs"])
+    }
+
+    @Test func aHiddenLaneReturnsAsTheSameRowOnItsNextActivity() throws {
+        let stale = try Fixtures.snapshot(Fixtures.gamma)
+        let weekly = try #require(stale.sessions.first { $0.displayName == "Weekly planning" })
+        #expect(SessionList(snapshots: [stale], now: Fixtures.now).hidden.map(\.id) == [weekly.id])
+
+        let active = try Fixtures.live(Fixtures.gamma) { object in
+            var sessions = object["sessions"] as! [[String: Any]]
+            for index in sessions.indices where sessions[index]["display_name"] as? String == "Weekly planning" {
+                var timing = sessions[index]["timing"] as! [String: Any]
+                timing["last_activity_at"] = "2026-09-24T10:04:00.000Z"
+                sessions[index]["timing"] = timing
+            }
+            object["sessions"] = sessions
+        }
+        let list = SessionList(snapshots: [active], now: Fixtures.now)
+        #expect(list.hidden.isEmpty)
+        #expect(list.current.contains { $0.id == weekly.id })
+    }
+
+    @Test func stalledWorkNeverHides() throws {
+        let gamma = try Fixtures.snapshot(Fixtures.gamma)
+        let muchLater = SessionList(snapshots: [gamma], now: Fixtures.now.addingTimeInterval(7 * 86_400), hideAfter: 3600)
         #expect(names(muchLater.current) == ["gamma/Deploy review", "gamma/Refactor docs"])
-        #expect(muchLater.older.count == 2)
+        #expect(muchLater.hidden.count == 2)
     }
 
     @Test(arguments: [
         ("deploy", ["gamma/Deploy review"]),
-        ("GAMMA", ["gamma/Deploy review", "gamma/Refactor docs", "gamma/Scratch notes", "gamma/Weekly planning"]),
+        ("GAMMA", ["gamma/Deploy review", "gamma/Refactor docs", "gamma/Scratch notes"]),
         ("model-a", ["alpha/Second thread", "alpha/First thread"]),
         ("first beta", ["beta/First thread"]),
         ("  thread   ALPHA ", ["alpha/Second thread", "alpha/First thread"]),
-        ("wéekly", ["gamma/Weekly planning"]),
-        ("#planning", ["gamma/Weekly planning"]),
-        ("planning", ["gamma/Weekly planning"]),
+        ("wéekly", []),       // hidden lanes never match
+        ("#planning", []),
+        ("planning", []),
         ("ops alpha", ["alpha/Second thread", "alpha/First thread"]),
         ("#OPS deploy", ["gamma/Deploy review"]),
         ("alpha-3", []),      // session IDs are not searchable
@@ -103,12 +132,13 @@ import Testing
     ])
     func searchMatchesNameProfileModelAndChannel(query: String, expected: [String]) throws {
         let list = SessionList(snapshots: try everyone(), query: query, now: Fixtures.now)
-        #expect(names(list.current + list.older) == expected)
+        #expect(names(list.current) == expected)
     }
 
-    @Test func emptyQueryShowsEverything() throws {
+    @Test func emptyQueryShowsEveryVisibleLane() throws {
         let list = SessionList(snapshots: try everyone(), query: "   ", now: Fixtures.now)
-        #expect(list.current.count + list.older.count == 7)
+        #expect(list.current.count == 6)
+        #expect(list.hidden.count == 1)
     }
 
     @Test func recencyText() throws {

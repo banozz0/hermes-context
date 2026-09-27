@@ -24,7 +24,7 @@ import Testing
         #expect(reading.failures.isEmpty)
         #expect(reading.snapshots.map(\.profile) == ["gamma", "alpha", "beta"])
         let list = SessionList(snapshots: reading.snapshots, now: Fixtures.now)
-        #expect(list.current.count + list.older.count == 7)
+        #expect(list.all.count == 7)
     }
 
     @Test func oneCorruptProfileDoesNotBlankTheOthers() throws {
