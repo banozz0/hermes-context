@@ -29,6 +29,15 @@ import Testing
         #expect(rotated.diagnostics.map(\.value).prefix(3) == ["alpha-3", "alpha-1", "alpha-1"])
     }
 
+    /// A Hermes that lost `context_window` still reports used tokens: they show alone, with no percent.
+    @Test func unknownWindowShowsTokensAlone() {
+        let context = ContextOccupancy(used: 90_000, maximum: nil, percentage: nil, source: "provider_reported",
+                                       measuredAt: Fixtures.now.addingTimeInterval(-150))
+        #expect(context.percentText == nil)
+        #expect(context.tokensText == "90k")
+        #expect(SessionDetails.context(context, now: Fixtures.now) == "90k tokens · measured 2m ago")
+    }
+
     @Test func offlineDetailsKeepTheLastKnownState() throws {
         let details = SessionDetails(session: try Self.session(Fixtures.alpha, "Second thread"), isOffline: true, now: Fixtures.now)
         #expect(details.isOffline)

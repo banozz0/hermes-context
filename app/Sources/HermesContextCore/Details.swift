@@ -78,9 +78,8 @@ public struct SessionDetails: Equatable, Sendable {
     }
 
     static func context(_ context: ContextOccupancy, now: Date) -> String {
-        guard let percent = context.percentText else { return "No measurement yet" }
-        var parts = [percent]
-        if let tokens = context.tokensText { parts.append("\(tokens) tokens") }
+        var parts = [context.percentText, context.tokensText.map { "\($0) tokens" }].compactMap { $0 }
+        guard !parts.isEmpty else { return "No measurement yet" }
         if context.isEstimated { parts.append("estimated") }
         if let measured = context.measuredAt { parts.append("measured \(LiveSession.elapsed(since: measured, now: now))") }
         return parts.joined(separator: " · ")

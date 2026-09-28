@@ -7,10 +7,11 @@ extension ContextOccupancy {
         return (isEstimated ? "~" : "") + "\(Int(percentage.rounded()))%"
     }
 
-    /// `90k / 200k` tokens of current prompt occupancy, or nil before any measurement.
+    /// `90k / 200k` tokens of current prompt occupancy, `90k` alone when the window size is unknown,
+    /// or nil before any measurement.
     public var tokensText: String? {
-        guard let used, let maximum else { return nil }
-        return "\(Self.compact(used)) / \(Self.compact(maximum))"
+        guard let used else { return nil }
+        return Self.compact(used) + (maximum.map { " / \(Self.compact($0))" } ?? "")
     }
 
     static func compact(_ tokens: Int) -> String {
