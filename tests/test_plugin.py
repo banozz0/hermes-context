@@ -17,7 +17,7 @@ from hermes_context_observer.compat import HOOK_FEATURES, INTERNAL_FEATURES, Her
 from hermes_context_observer.contract import DEGRADED_FEATURES, effective_freshness, validate_snapshot
 from hermes_context_observer.observer import KnownLane, Observer, Route, timestamp
 
-from conftest import read_snapshot
+from conftest import events, read_snapshot
 
 
 EXPECTED_HOOKS = {
@@ -304,7 +304,9 @@ def test_hermes_without_an_internal_switches_off_only_its_features(tmp_path: Pat
                                                                   internal, features):
     """A Hermes update that drops one internal or hook costs only the features the map gives it: the plugin registers
     and beats, `degraded` names exactly those features, and unless `sessions` is lost a completed request still
-    measures context (percentage unknown only without `context_window`)."""
+    measures context (percentage unknown only without `context_window`). A subagent's request never lands on its
+    parent's lane, and without the lock check nothing beats before a gateway dispatches."""
+    from agent.delegation_context import delegated_child_context
     from agent.model_metadata import save_context_length
     from gateway.session_context import set_session_vars, clear_session_vars
     from gateway import status
@@ -340,6 +342,8 @@ def test_hermes_without_an_internal_switches_off_only_its_features(tmp_path: Pat
     tokens = set_session_vars(platform="discord", chat_id="channel-20", session_key=lane, session_id="s")
     try:
         assert set(hooks) == EXPECTED_HOOKS
+        assert (tmp_path / "hermes-context/v1/snapshot.json").is_file() == (
+            internal != "gateway.status.owns_gateway_runtime_lock")
         hooks["pre_gateway_dispatch"]()
         hooks["on_session_start"](session_id="s")
         hooks["pre_api_request"](session_id="s", **route)
@@ -351,6 +355,8 @@ def test_hermes_without_an_internal_switches_off_only_its_features(tmp_path: Pat
             hooks["post_tool_call"](session_id="s", tool_name="terminal", tool_call_id=call, api_request_id="r1",
                                     result=result, status="ok", duration_ms=1)
         hooks["post_api_request"](session_id="s2", api_request_id="r2", usage={"prompt_tokens": 60_000}, **route)
+        with delegated_child_context("child"):
+            hooks["post_api_request"](session_id="child", api_request_id="c1", usage={"prompt_tokens": 5}, **route)
         hooks["on_session_end"](session_id="s2")
         after, deadline = timestamp(), time.monotonic() + 5
         while (snapshot := read_snapshot(tmp_path))["gateway"]["heartbeat_at"] <= after:  # A beat after every mark.
@@ -358,6 +364,7 @@ def test_hermes_without_an_internal_switches_off_only_its_features(tmp_path: Pat
             time.sleep(0.02)
         validate_snapshot(snapshot)
         assert snapshot.get("degraded", []) == sorted(features)
+        assert all(item["session_id"] != "child" for item in [*events(tmp_path), *snapshot["sessions"]])
         if "sessions" not in features:
             rows = {row["discord_route"]["channel_id"]: row for row in snapshot["sessions"]}
             assert type(rows["channel-20"]["context"]["used"]) is int
@@ -601,12 +608,18 @@ def test_gateway_route_switch_without_reset_and_resume_preserve_history(tmp_path
         clear_session_vars(tokens)
         context.unload()
 
-def test_scoped_profiles_use_process_route_index_and_isolate_events(tmp_path: Path, monkeypatch, hermes):
+@pytest.mark.parametrize("process_home_lookup", [True, False])
+def test_scoped_profiles_use_process_route_index_and_isolate_events(tmp_path: Path, monkeypatch, hermes,
+                                                                    process_home_lookup):
+    """Without Hermes's process-home lookup the routing home falls back to `HERMES_HOME`, Hermes's own rule for the
+    process home; each served profile's own home holds none of the index and would refuse every lane."""
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from gateway.session_context import set_session_vars, clear_session_vars
     from gateway import status
     from hermes_state import SessionDB
     monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
+    if not process_home_lookup:
+        without(monkeypatch, "hermes_constants.get_process_hermes_home")
     scope = str((tmp_path / "sessions").resolve())
     contexts = {}
     for name in ("alpha", "beta"):

@@ -122,7 +122,11 @@ class Hermes:
             return _default_home()
 
     def routing_home(self) -> Path:
-        """The process home, whose state database holds a multiplexed gateway's routing index."""
+        """The process home, whose state database holds a multiplexed gateway's routing index.
+
+        Without Hermes's lookup, its own rule for the process home, never the profile home: a served profile's home
+        holds none of the index.
+        """
         try:
             from hermes_constants import get_process_hermes_home
 
