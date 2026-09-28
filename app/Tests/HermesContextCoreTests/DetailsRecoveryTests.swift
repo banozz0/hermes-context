@@ -171,6 +171,53 @@ import Testing
     }
 }
 
+@Suite struct DegradedTests {
+    static let rerun = "Rerun the install line for the latest Hermes Context."
+
+    /// beta is live at `Fixtures.now`; `degraded` is what its plugin says a Hermes update switched off.
+    static func beta(degraded: [String], alphaDegraded: [String]? = nil) throws -> BridgeState {
+        let root = try Fixtures.hermesRoot([:])
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Fixtures.write(try Fixtures.mutate(Fixtures.beta) { $0["degraded"] = degraded }, profile: "beta", root: root)
+        if let alphaDegraded {
+            try Fixtures.write(try Fixtures.mutate(Fixtures.alpha) { $0["degraded"] = alphaDegraded }, profile: "alpha", root: root)
+        }
+        var state = BridgeState()
+        state.apply(BridgeReading.read(BridgeLocation(root: root)))
+        return state
+    }
+
+    @Test func oneLineNamesEveryLostFeatureInUserWords() throws {
+        let diagnostics = try Self.beta(degraded: ["titles"]).diagnostics(now: Fixtures.now)
+        #expect(diagnostics.map(\.profile) == ["beta"])
+        #expect(diagnostics.first?.message(now: Fixtures.now) == "A Hermes update switched off session titles. \(Self.rerun)")
+
+        let three = try Self.beta(degraded: ["context_window", "titles", "tool_history"]).diagnostics(now: Fixtures.now)
+        #expect(three.map { $0.message(now: Fixtures.now) } == [
+            "A Hermes update switched off context window sizes, session titles and tool history. \(Self.rerun)"])
+    }
+
+    @Test func everyFeatureHasItsOwnUserWords() {
+        let words = DegradedFeature.allCases.filter { $0 != .sessions }.map(\.userWords)
+        #expect(words.count == 8 && Set(words).count == 8)
+        #expect(words.allSatisfy { !$0.isEmpty && !$0.contains("_") })
+    }
+
+    @Test func lostSessionsSaysItCannotSeeThem() throws {
+        let diagnostics = try Self.beta(degraded: ["sessions", "titles"]).diagnostics(now: Fixtures.now)
+        #expect(diagnostics.map { $0.message(now: Fixtures.now) } == ["Hermes Context can't see its sessions. \(Self.rerun)"])
+    }
+
+    @Test func offlineProfileShowsOnlyItsOfflineLine() throws {
+        // alpha is 60 s stale at `Fixtures.now`: its gateway is gone, so its last report is no longer news.
+        let diagnostics = try Self.beta(degraded: ["titles"], alphaDegraded: ["lineage"]).diagnostics(now: Fixtures.now)
+        #expect(diagnostics.map { "\($0.profile): \($0.message(now: Fixtures.now))" } == [
+            "alpha: Gateway offline, last heartbeat 1m ago.",
+            "beta: A Hermes update switched off session titles. \(Self.rerun)",
+        ])
+    }
+}
+
 @Suite struct RecoveryTests {
     @Test func corruptProfileKeepsItsLastGoodSnapshotAndDiagnoses() throws {
         let root = try Fixtures.hermesRoot(["alpha": Fixtures.alpha, "beta": Fixtures.beta])

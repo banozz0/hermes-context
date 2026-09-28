@@ -143,6 +143,7 @@ class Observer:
         compression_chain: Callable[[str], tuple[str, ...]] | None = None,
         route_owner: Callable[[Route, str], bool] | None = None,
         known_lanes: Callable[[], list[KnownLane]] | None = None,
+        degraded: Callable[[], list[str]] | None = None,
     ):
         self.profile = profile
         self.offline_after_seconds = int(offline_after_seconds)
@@ -153,11 +154,13 @@ class Observer:
         self._route_owner = route_owner or (lambda _route, _session_id: False)
         self._known_lanes = known_lanes or (lambda: [])
         self._gateway_owner = gateway_owner or (lambda: True)
+        self._degraded = degraded or (lambda: [])
         self._lanes: dict[str, dict[str, Any]] = {}
         self._recovery_heartbeat: str | None = None
         self._restore_snapshot()
         self._lock = threading.RLock()
         self._heartbeat_at: str | None = None
+        self._saved_degraded: list[str] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._thread_factory = thread_factory or threading.Thread
@@ -199,6 +202,7 @@ class Observer:
             if saved is not None:
                 self._load_lanes(saved)
                 self._heartbeat_at = saved["gateway"]["heartbeat_at"]
+                self._saved_degraded = saved.get("degraded", [])
                 if saved["gateway"]["heartbeat_at"] == self._recovery_heartbeat:
                     # Until a write lands, every transaction repeats the reset: one that publishes
                     # nothing must not let stale in-flight rows back out under a fresh heartbeat.
@@ -302,8 +306,11 @@ class Observer:
     def _publish(self, at: str) -> None:
         if self._gateway_owner():
             self._heartbeat_at = at
+            degraded = self._degraded()
         elif self._heartbeat_at is None:
             return  # No gateway has published yet; CLI must not invent its heartbeat.
+        else:
+            degraded = self._saved_degraded  # The gateway's report, like its heartbeat.
         snapshot = {
             "contract_version": CONTRACT_VERSION,
             "profile": self.profile,
@@ -315,6 +322,8 @@ class Observer:
             },
             "sessions": [self._lanes[key] for key in sorted(self._lanes)],
         }
+        if degraded:
+            snapshot["degraded"] = degraded
         self.store.write(snapshot)
         self._recovery_heartbeat = None
 

@@ -175,24 +175,41 @@ import Testing
         }
     }
 
+    /// The headless check's output for a Hermes root holding one profile's snapshot, read at `now`.
+    static func headless(profile: String, snapshot: Data) throws -> [String: Any] {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hermes-context-headless-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("profiles/\(profile)/\(BridgeLocation.snapshotSuffix)")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try snapshot.write(to: file)
+        let output = root.appendingPathComponent("check.json")
+        var body: [String: Any] = [:]
+        try withSettings { settings, _ in
+            let check = HeadlessCheck(output: output, seconds: nil, defaultsSuite: nil)
+            LiveStore(location: BridgeLocation(root: root), settings: settings, check: check, clock: { now }).reload()
+            body = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: output)) as? [String: Any])
+        }
+        return body
+    }
+
     /// What agents read without a screen: visible rows under `current`, idle lanes past the hide age under
     /// `hidden`, and the setting that decided it.
     @Test func headlessOutputSplitsVisibleAndHiddenLanes() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hermes-context-headless-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let directory = root.appendingPathComponent("profiles/gamma/hermes-context/v1", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data(contentsOf: Self.fixtures.appendingPathComponent("list/gamma.snapshot.json"))
-            .write(to: directory.appendingPathComponent("snapshot.json"))
-        let output = root.appendingPathComponent("check.json")
-        try withSettings { settings, _ in
-            let check = HeadlessCheck(output: output, seconds: nil, defaultsSuite: nil)
-            LiveStore(location: BridgeLocation(root: root), settings: settings, check: check, clock: { Self.now }).reload()
-            let body = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: output)) as? [String: Any])
-            func names(_ key: String) -> [String] { (body[key] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String } }
-            #expect(names("current") == ["Deploy review", "Refactor docs", "Scratch notes"])
-            #expect(names("hidden") == ["Weekly planning"])
-            #expect((body["settings"] as? [String: Any])?["hide_after_hours"] as? Int == 24)
-        }
+        let body = try Self.headless(profile: "gamma", snapshot: Data(contentsOf: Self.fixtures.appendingPathComponent("list/gamma.snapshot.json")))
+        func names(_ key: String) -> [String] { (body[key] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String } }
+        #expect(names("current") == ["Deploy review", "Refactor docs", "Scratch notes"])
+        #expect(names("hidden") == ["Weekly planning"])
+        #expect((body["settings"] as? [String: Any])?["hide_after_hours"] as? Int == 24)
+    }
+
+    /// Agents verify a Hermes update's lost features without a screen: the line is in `diagnostics`.
+    @Test func headlessOutputCarriesTheDegradedLine() throws {
+        var beta = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: Self.fixtures.appendingPathComponent("beta.snapshot.json"))) as? [String: Any])
+        beta["degraded"] = ["titles", "tool_history"]
+        let body = try Self.headless(profile: "beta", snapshot: JSONSerialization.data(withJSONObject: beta))
+        let diagnostics = body["diagnostics"] as? [[String: Any]] ?? []
+        #expect(diagnostics.map { "\($0["profile"] ?? ""): \($0["message"] ?? "")" } == [
+            "beta: A Hermes update switched off session titles and tool history. Rerun the install line for the latest Hermes Context.",
+        ])
     }
 }

@@ -273,3 +273,15 @@ def test_stale_rows_stay_idle_when_the_first_transaction_writes_nothing(tmp_path
     restarted.session_reset("unknown", "other")  # Matches no lane, so it publishes nothing.
     restarted.heartbeat()
     assert read_snapshot(tmp_path)["sessions"][0]["state"] == "idle"
+
+
+def test_degraded_is_the_gateways_report_and_clears_when_it_loses_nothing(tmp_path: Path):
+    """Like the heartbeat, only the gateway owner reports what it lost; another process's write keeps that report."""
+    Observer(tmp_path, "alpha", gateway_owner=lambda: True, degraded=lambda: ["titles"]).heartbeat()
+    cli = Observer(tmp_path, "alpha", gateway_owner=lambda: False, degraded=lambda: [])
+    cli.session_started(discord_route("alpha", "thread-1", "First thread"), "session-1")
+    snapshot = read_snapshot(tmp_path)
+    validate_snapshot(snapshot)
+    assert (snapshot["degraded"], len(snapshot["sessions"])) == (["titles"], 1)
+    Observer(tmp_path, "alpha", gateway_owner=lambda: True).heartbeat()  # Updated plugin, restarted gateway.
+    assert "degraded" not in read_snapshot(tmp_path)

@@ -163,6 +163,8 @@ public struct BridgeDiagnostic: Equatable, Sendable, Identifiable {
         case offline(lastHeartbeat: Date)
         /// Event records the history is missing because they were absent, rejected or unreadable.
         case skippedEvents(count: Int)
+        /// The live plugin reports features a Hermes update switched off.
+        case degraded([DegradedFeature])
     }
 
     public let file: URL
@@ -178,7 +180,18 @@ public struct BridgeDiagnostic: Equatable, Sendable, Identifiable {
             "Gateway offline, last heartbeat \(LiveSession.elapsed(since: heartbeat, now: now))."
         case .skippedEvents(let count):
             "History skipped \(count) event record\(count == 1 ? "" : "s"): missing, corrupt or unsupported."
+        case .degraded(let features):
+            "\(Self.lostSentence(features)) Rerun the install line for the latest Hermes Context."
         }
+    }
+
+    /// `A Hermes update switched off session titles and tool history.` A lost `sessions` outranks the rest: with no
+    /// sessions to show, the other features are moot.
+    private static func lostSentence(_ features: [DegradedFeature]) -> String {
+        if features.contains(.sessions) { return "Hermes Context can't see its sessions." }
+        var words = features.map(\.userWords)
+        let last = words.popLast() ?? ""
+        return "A Hermes update switched off \(words.isEmpty ? last : words.joined(separator: ", ") + " and " + last)."
     }
 
     /// One diagnostic per profile whose history skipped event records, pointing at its events directory.
@@ -216,17 +229,23 @@ public struct BridgeState: Sendable {
         lastGood = kept
     }
 
-    /// Read failures first, then offline gateways, in discovery order.
+    /// Read failures first, then offline gateways, then live plugins that lost features, in discovery order.
+    /// An offline profile's degraded report is from a gateway that is gone, so only its offline line shows.
     public func diagnostics(now: Date) -> [BridgeDiagnostic] {
         let failed = failures.map { failure in
             BridgeDiagnostic(file: failure.file, profile: failure.profile,
                              problem: .unreadable(reason: failure.reason, retained: lastGood[failure.file] != nil))
         }
         let failedFiles = Set(failures.map(\.file))
-        let offline = lastGood
-            .filter { !failedFiles.contains($0.key) && $0.value.isOffline(at: now) }
-            .sorted { $0.key.path < $1.key.path }
-            .map { BridgeDiagnostic(file: $0.key, profile: $0.value.profile, problem: .offline(lastHeartbeat: $0.value.heartbeatAt)) }
-        return failed + offline
+        var offline: [BridgeDiagnostic] = []
+        var degraded: [BridgeDiagnostic] = []
+        for (file, snapshot) in lastGood.sorted(by: { $0.key.path < $1.key.path }) where !failedFiles.contains(file) {
+            if snapshot.isOffline(at: now) {
+                offline.append(BridgeDiagnostic(file: file, profile: snapshot.profile, problem: .offline(lastHeartbeat: snapshot.heartbeatAt)))
+            } else if !snapshot.degraded.isEmpty {
+                degraded.append(BridgeDiagnostic(file: file, profile: snapshot.profile, problem: .degraded(snapshot.degraded)))
+            }
+        }
+        return failed + offline + degraded
     }
 }

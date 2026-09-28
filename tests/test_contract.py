@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_context_observer.contract import ContractError, effective_freshness, validate_snapshot
+from hermes_context_observer.contract import DEGRADED_FEATURES, ContractError, effective_freshness, validate_snapshot
 
 
 FORBIDDEN_KEYS = {
@@ -74,3 +74,35 @@ def test_channel_label_is_a_bounded_string_or_null(label):
     payload["sessions"][0]["discord_route"]["channel_label"] = label
     with pytest.raises(ContractError, match="channel_label"):
         validate_snapshot(payload)
+
+
+def alpha_fixture() -> dict:
+    return json.loads((Path(__file__).resolve().parents[1] / "fixtures" / "v1" / "alpha.snapshot.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("degraded", [["titles"], ["backfill", "sessions", "titles"], sorted(DEGRADED_FEATURES)])
+def test_degraded_names_what_an_update_switched_off(degraded):
+    payload = alpha_fixture()
+    payload["degraded"] = degraded
+    validate_snapshot(payload)
+
+
+@pytest.mark.parametrize("degraded", [[], ["titles", "titles"], ["titles", "backfill"], ["title"],
+                                      ["AttributeError: get_session_title"], [["titles"]], "titles", None])
+def test_degraded_holds_only_sorted_unique_feature_names(degraded):
+    payload = alpha_fixture()
+    payload["degraded"] = degraded
+    with pytest.raises(ContractError, match="degraded"):
+        validate_snapshot(payload)
+
+
+def test_snapshot_schema_agrees_on_degraded():
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads((Path(__file__).resolve().parents[1] / "contracts/v1/snapshot.schema.json").read_text())
+    payload = alpha_fixture()
+    jsonschema.validate(payload, schema)  # Absent: nothing lost.
+    assert set(schema["properties"]["degraded"]["items"]["enum"]) == DEGRADED_FEATURES
+    for degraded in ([], ["titles", "titles"], ["title"]):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({**payload, "degraded": degraded}, schema)
+    jsonschema.validate({**payload, "degraded": ["titles"]}, schema)

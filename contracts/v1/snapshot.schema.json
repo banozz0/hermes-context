@@ -10,6 +10,12 @@
     "profile": {"type": "string", "minLength": 1},
     "generated_at": {"type": "string"},
     "freshness": {"enum": ["live", "offline"]},
+    "degraded": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["attention", "backfill", "context_window", "lineage", "sessions", "startup", "subagents", "titles", "tool_history"]}
+    },
     "gateway": {
       "type": "object",
       "additionalProperties": false,

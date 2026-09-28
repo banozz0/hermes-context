@@ -9,8 +9,13 @@ SESSION_STATES = frozenset({"working", "needs_attention", "idle"})
 TOOL_STATUSES = frozenset({"ok", "error"})
 FRESHNESS_STATES = frozenset({"live", "offline"})
 CHANNEL_LABEL_MAX = 100  # Discord's own channel-name limit.
+# What a Hermes update can switch off; a snapshot's optional `degraded` names only these.
+DEGRADED_FEATURES = frozenset({
+    "sessions", "titles", "context_window", "lineage", "backfill", "tool_history", "attention", "startup", "subagents",
+})
 
 _TOP_LEVEL = frozenset({"contract_version", "profile", "generated_at", "freshness", "gateway", "sessions"})
+_TOP_LEVEL_OPTIONAL = frozenset({"degraded"})
 _GATEWAY = frozenset({"heartbeat_at", "offline_after_seconds"})
 _SESSION = frozenset({
     "routing_id",
@@ -41,9 +46,10 @@ class ContractError(ValueError):
     """A bridge document is outside the privacy-safe v1 contract."""
 
 
-def _exact_keys(value: Mapping[str, Any], allowed: frozenset[str], path: str) -> None:
+def _exact_keys(value: Mapping[str, Any], allowed: frozenset[str], path: str,
+                optional: frozenset[str] = frozenset()) -> None:
     actual = set(value)
-    unknown = actual - allowed
+    unknown = actual - allowed - optional
     missing = allowed - actual
     if unknown:
         raise ContractError(f"{path} has unapproved field(s): {', '.join(sorted(unknown))}")
@@ -152,13 +158,19 @@ def validate_snapshot(snapshot: Mapping[str, Any]) -> None:
     """Reject every field not explicitly approved by the v1 live contract."""
     if not isinstance(snapshot, Mapping):
         raise ContractError("snapshot must be an object")
-    _exact_keys(snapshot, _TOP_LEVEL, "snapshot")
+    _exact_keys(snapshot, _TOP_LEVEL, "snapshot", optional=_TOP_LEVEL_OPTIONAL)
     if snapshot["contract_version"] != CONTRACT_VERSION:
         raise ContractError(f"unsupported contract_version: {snapshot['contract_version']!r}")
     _string(snapshot["profile"], "snapshot.profile")
     _string(snapshot["generated_at"], "snapshot.generated_at")
     if snapshot["freshness"] not in FRESHNESS_STATES:
         raise ContractError("snapshot.freshness is invalid")
+    if "degraded" in snapshot:
+        degraded = snapshot["degraded"]
+        if (not isinstance(degraded, list) or not degraded
+                or not all(isinstance(name, str) and name in DEGRADED_FEATURES for name in degraded)
+                or degraded != sorted(set(degraded))):
+            raise ContractError("snapshot.degraded must be a sorted, non-empty list of unique feature names")
 
     gateway = snapshot["gateway"]
     if not isinstance(gateway, Mapping):

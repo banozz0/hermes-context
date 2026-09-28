@@ -12,11 +12,41 @@ public struct ProfileSnapshot: Equatable, Sendable {
     /// What the writer declared; the reader's own clock decides staleness in `isOffline(at:)`.
     public let freshness: String
     public let sessions: [LiveSession]
+    /// What a Hermes update switched off in this profile's plugin; empty when nothing is lost.
+    public let degraded: [DegradedFeature]
 
     /// Offline once the heartbeat is older than the producer's timeout, judged on this Mac's clock.
     /// An empty session list is never offline by itself.
     public func isOffline(at now: Date) -> Bool {
         freshness == "offline" || now.timeIntervalSince(heartbeatAt) > TimeInterval(offlineAfterSeconds)
+    }
+}
+
+/// The closed v1 set of plugin features a Hermes update can switch off, as the snapshot's `degraded` names them.
+public enum DegradedFeature: String, Decodable, Sendable, CaseIterable {
+    case attention
+    case backfill
+    case contextWindow = "context_window"
+    case lineage
+    case sessions
+    case startup
+    case subagents
+    case titles
+    case toolHistory = "tool_history"
+
+    /// What the user loses, as the diagnostic line names it. `sessions` has its own sentence instead.
+    public var userWords: String {
+        switch self {
+        case .attention: "needs-attention status"
+        case .backfill: "sessions listed at startup"
+        case .contextWindow: "context window sizes"
+        case .lineage: "session history links"
+        case .sessions: "sessions"
+        case .startup: "status at gateway start"
+        case .subagents: "subagent filtering"
+        case .titles: "session titles"
+        case .toolHistory: "tool history"
+        }
     }
 }
 
@@ -135,6 +165,10 @@ public enum SnapshotDecoder {
         guard Set(wire.sessions.map(\.routing_id)).count == wire.sessions.count else {
             throw SnapshotError.malformed("duplicate routing_id")
         }
+        let degraded = wire.degraded ?? []
+        guard Set(degraded).count == degraded.count else {
+            throw SnapshotError.malformed("duplicate degraded feature")
+        }
         let sessions = try wire.sessions.map { row in
             guard row.profile == wire.profile else {
                 throw SnapshotError.profileMismatch(snapshot: wire.profile, session: row.profile)
@@ -183,7 +217,8 @@ public enum SnapshotDecoder {
             heartbeatAt: try parseTimestamp(wire.gateway.heartbeat_at),
             offlineAfterSeconds: wire.gateway.offline_after_seconds,
             freshness: wire.freshness,
-            sessions: sessions
+            sessions: sessions,
+            degraded: degraded
         )
     }
 
@@ -236,6 +271,7 @@ private enum Wire {
         let freshness: String
         let gateway: Gateway
         let sessions: [Session]
+        let degraded: [DegradedFeature]?
     }
 
     struct Gateway: Decodable {

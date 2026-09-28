@@ -7,7 +7,8 @@ from pathlib import Path
 
 import hermes_context_observer as plugin
 from hermes_context_observer import register
-from hermes_context_observer.contract import effective_freshness, validate_snapshot
+from hermes_context_observer.compat import HOOK_FEATURES, INTERNAL_FEATURES, Hermes
+from hermes_context_observer.contract import DEGRADED_FEATURES, effective_freshness, validate_snapshot
 from hermes_context_observer.observer import KnownLane, Observer, Route
 
 from conftest import read_snapshot
@@ -41,7 +42,29 @@ class FakeContext:
         self.unload = callback
 
 
-def test_display_name_precedence_is_thread_then_generated_title_then_fallback(tmp_path: Path, monkeypatch):
+class StubHermes(Hermes):
+    """The task-local session source and generated title Hermes would hand the plugin, without Hermes."""
+
+    def __init__(self, values: dict[str, str], title: str | None = None):
+        super().__init__()
+        self.values, self.title = values, title
+
+    def session_value(self, name):
+        return self.values.get(name, "")
+
+    def conversation_title(self, home, session_id):
+        return self.title
+
+    def delegated_child(self):
+        return False
+
+
+def test_every_feature_has_its_internals_and_hooks_in_the_map():
+    assert set(HOOK_FEATURES) == EXPECTED_HOOKS
+    assert set(INTERNAL_FEATURES.values()) | set(HOOK_FEATURES.values()) == DEGRADED_FEATURES
+
+
+def test_display_name_precedence_is_thread_then_generated_title_then_fallback(tmp_path: Path):
     values = {
         "HERMES_SESSION_PLATFORM": "discord",
         "HERMES_SESSION_CHAT_ID": "chat-1",
@@ -49,13 +72,11 @@ def test_display_name_precedence_is_thread_then_generated_title_then_fallback(tm
         "HERMES_SESSION_CHAT_NAME": "Discord thread",
         "HERMES_SESSION_ID": "session-1",
     }
-    monkeypatch.setattr(plugin, "_session_value", lambda key: values.get(key, ""))
-    monkeypatch.setattr(plugin, "_conversation_title", lambda _home, _sid: "Generated title")
-    assert plugin._route("alpha", tmp_path).name == "Discord thread"
+    hermes = StubHermes(values, "Generated title")
+    assert plugin._route(hermes, "alpha", tmp_path).name == "Discord thread"
     values["HERMES_SESSION_THREAD_ID"] = ""
-    assert plugin._route("alpha", tmp_path).name == "Generated title"
-    monkeypatch.setattr(plugin, "_conversation_title", lambda _home, _sid: None)
-    assert plugin._route("alpha", tmp_path).name == "alpha discord session"
+    assert plugin._route(hermes, "alpha", tmp_path).name == "Generated title"
+    assert plugin._route(StubHermes(values), "alpha", tmp_path).name == "alpha discord session"
 
 
 def write_directory(home: Path, *entries: dict) -> None:
@@ -64,7 +85,7 @@ def write_directory(home: Path, *entries: dict) -> None:
     )
 
 
-def test_thread_lane_gets_bare_thread_name_and_parent_channel_label(tmp_path: Path, monkeypatch):
+def test_thread_lane_gets_bare_thread_name_and_parent_channel_label(tmp_path: Path):
     write_directory(
         tmp_path,
         {"id": "channel-10", "name": "ops", "guild": "Hermes", "type": "channel"},
@@ -80,40 +101,37 @@ def test_thread_lane_gets_bare_thread_name_and_parent_channel_label(tmp_path: Pa
         "HERMES_SESSION_CHAT_NAME": "Hermes / #ops / Deploy review",
         "HERMES_SESSION_ID": "session-1",
     }
-    monkeypatch.setattr(plugin, "_session_value", lambda key: values.get(key, ""))
-    route = plugin._route("alpha", tmp_path)
+    hermes = StubHermes(values)
+    route = plugin._route(hermes, "alpha", tmp_path)
     assert (route.name, route.channel_label, route.channel_id) == ("Deploy review", "#ops", "channel-10")
     # A thread whose own name contains the separator keeps it; only the exact known prefix goes.
     values["HERMES_SESSION_CHAT_NAME"] = "Hermes / #ops / Plan / phase 2"
-    assert plugin._route("alpha", tmp_path).name == "Plan / phase 2"
+    assert plugin._route(hermes, "alpha", tmp_path).name == "Plan / phase 2"
     # Forum parents carry no '#'.
     values["HERMES_SESSION_CHAT_NAME"] = "Hermes / ops / Forum post"
-    assert plugin._route("alpha", tmp_path).name == "Forum post"
+    assert plugin._route(hermes, "alpha", tmp_path).name == "Forum post"
     # Unknown channel: never guess where the thread name starts.
     values["HERMES_SESSION_PARENT_CHAT_ID"] = "channel-99"
-    route = plugin._route("alpha", tmp_path)
+    route = plugin._route(hermes, "alpha", tmp_path)
     assert (route.name, route.channel_label) == ("Hermes / ops / Forum post", None)
 
 
-def test_unthreaded_lane_gets_channel_label_and_generated_title(tmp_path: Path, monkeypatch):
+def test_unthreaded_lane_gets_channel_label_and_generated_title(tmp_path: Path):
     write_directory(tmp_path, {"id": "channel-20", "name": "planning", "guild": "Hermes", "type": "channel"})
     values = {"HERMES_SESSION_PLATFORM": "discord", "HERMES_SESSION_CHAT_ID": "channel-20", "HERMES_SESSION_ID": "s"}
-    monkeypatch.setattr(plugin, "_session_value", lambda key: values.get(key, ""))
-    monkeypatch.setattr(plugin, "_conversation_title", lambda _home, _sid: "Weekly planning")
-    route = plugin._route("alpha", tmp_path)
+    route = plugin._route(StubHermes(values, "Weekly planning"), "alpha", tmp_path)
     assert (route.name, route.channel_label) == ("Weekly planning", "#planning")
 
 
-def test_channel_label_is_one_bounded_line_and_bad_directories_are_ignored(tmp_path: Path, monkeypatch):
+def test_channel_label_is_one_bounded_line_and_bad_directories_are_ignored(tmp_path: Path):
     values = {"HERMES_SESSION_PLATFORM": "discord", "HERMES_SESSION_CHAT_ID": "channel-20", "HERMES_SESSION_ID": "s"}
-    monkeypatch.setattr(plugin, "_session_value", lambda key: values.get(key, ""))
-    monkeypatch.setattr(plugin, "_conversation_title", lambda _home, _sid: None)
+    hermes = StubHermes(values)
     write_directory(tmp_path, {"id": "channel-20", "name": "  new\nline\t" + "x" * 200, "guild": "Hermes"})
-    label = plugin._route("alpha", tmp_path).channel_label
+    label = plugin._route(hermes, "alpha", tmp_path).channel_label
     assert label.startswith("#new line x") and len(label) == 100
     for body in ("not json", '{"platforms": {"discord": {"id": "channel-20"}}}', "[]"):
         (tmp_path / "channel_directory.json").write_text(body, encoding="utf-8")
-        assert plugin._route("alpha", tmp_path).channel_label is None
+        assert plugin._route(hermes, "alpha", tmp_path).channel_label is None
 
 
 def test_cli_registration_does_not_publish_gateway_heartbeat(tmp_path: Path, monkeypatch, hermes):
@@ -193,6 +211,41 @@ def test_registration_before_the_gateway_lock_starts_once_the_gateway_takes_it(t
         assert {row["session_id"]: row["state"] for row in snapshot["sessions"]} == {"session-a": "idle",
                                                                                      "session-b": "idle"}
     finally:
+        context.unload()
+
+
+def test_lost_title_lookup_switches_off_only_titles(tmp_path: Path, monkeypatch, hermes, caplog):
+    """A Hermes update that drops the title lookup costs the generated name, never the plugin or the numbers."""
+    from agent.model_metadata import save_context_length
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from gateway import status
+    from hermes_state import SessionDB
+    monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
+    with SessionDB(tmp_path / "state.db") as db:
+        db.create_session("s", "discord")
+        db.set_session_title("s", "Weekly planning")  # what the row would be called with the lookup in place
+    owner = next(cls for cls in SessionDB.__mro__ if "get_session_title" in vars(cls))
+    monkeypatch.delattr(owner, "get_session_title")
+    save_context_length("m", "https://models.example.test/v1", 200_000)
+    context = FakeContext()
+    register(context)
+    tokens = set_session_vars(platform="discord", chat_id="channel-20", session_id="s")  # unthreaded: asks for a title
+    try:
+        assert set(context.hooks) == EXPECTED_HOOKS
+        assert "degraded" not in read_snapshot(tmp_path)  # beating, and nothing lost before a title was needed
+        context.hooks["on_session_start"](session_id="s")
+        context.hooks["post_api_request"](session_id="s", api_request_id="r1", model="m", provider="p",
+                                          base_url="https://models.example.test/v1", usage={"prompt_tokens": 50_000})
+        snapshot = read_snapshot(tmp_path)
+        validate_snapshot(snapshot)
+        assert snapshot["degraded"] == ["titles"]
+        # Both hooks looked the title up; the loss is logged once.
+        assert [r.levelname for r in caplog.records if r.name == "hermes_context_observer.compat"] == ["WARNING"]
+        row = snapshot["sessions"][0]
+        assert (row["display_name"], row["context"]["used"], row["context"]["percentage"]) == (
+            "alpha discord session", 50_000, 25.0)
+    finally:
+        clear_session_vars(tokens)
         context.unload()
 
 

@@ -99,6 +99,25 @@ import Testing
         }
     }
 
+    /// The closed v1 feature set; absent means nothing lost.
+    static let features = ["attention", "backfill", "context_window", "lineage", "sessions", "startup", "subagents",
+                           "titles", "tool_history"]
+
+    @Test func degradedNamesTheFeaturesAHermesUpdateSwitchedOff() throws {
+        #expect(try Fixtures.snapshot(Fixtures.beta).degraded.isEmpty)
+        let every = try SnapshotDecoder.decode(Fixtures.mutate(Fixtures.beta) { $0["degraded"] = Self.features })
+        #expect(every.degraded.map(\.rawValue) == Self.features)
+        let titles = try SnapshotDecoder.decode(Fixtures.mutate(Fixtures.beta) { $0["degraded"] = ["titles"] })
+        #expect(titles.degraded == [.titles])
+    }
+
+    @Test(arguments: [["title"], ["titles", "titles"], ["AttributeError: get_session_title"]])
+    func rejectsDegradedNamesOutsideTheClosedSet(degraded: [String]) throws {
+        #expect(throws: SnapshotError.self) {
+            try SnapshotDecoder.decode(Fixtures.mutate(Fixtures.beta) { $0["degraded"] = degraded })
+        }
+    }
+
     @Test func estimatedOccupancyIsDisclosed() {
         let estimate = ContextOccupancy(used: 1_500, maximum: 128_000, percentage: 1.171875, source: "estimated", measuredAt: nil)
         #expect(estimate.isEstimated)
