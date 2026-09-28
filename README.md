@@ -2,6 +2,8 @@
 
 Live Hermes Discord sessions in your menu bar.
 
+![The Hermes Context popover under its warning icon: seven Discord sessions across three profiles, two at or above the 30% context threshold](.github/screenshot.png)
+
 A macOS menu-bar app for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It lists every Discord session your Hermes profiles are running, shows how full each one's context window is and whether it is working, waiting on you or idle, and keeps a private local history of context usage. It never stores a message.
 
 ## Install
