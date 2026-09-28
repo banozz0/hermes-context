@@ -37,12 +37,17 @@ enum Fixtures {
 
     /// A fixture whose gateway beat at `now`, so its lanes read live rather than Offline; `also` edits it further.
     static func live(_ name: String, also: (inout [String: Any]) -> Void = { _ in }) throws -> ProfileSnapshot {
-        try SnapshotDecoder.decode(mutate(name) { object in
+        try SnapshotDecoder.decode(beating(name, at: now, also: also))
+    }
+
+    /// A fixture whose gateway last beat at `heartbeat`; `also` edits it further.
+    static func beating(_ name: String, at heartbeat: Date, also: (inout [String: Any]) -> Void = { _ in }) throws -> Data {
+        try mutate(name) { object in
             var gateway = object["gateway"] as! [String: Any]
-            gateway["heartbeat_at"] = now.formatted(.iso8601.year().month().day().time(includingFractionalSeconds: true).timeZone(separator: .omitted))
+            gateway["heartbeat_at"] = heartbeat.formatted(.iso8601.year().month().day().time(includingFractionalSeconds: true).timeZone(separator: .omitted))
             object["gateway"] = gateway
             also(&object)
-        })
+        }
     }
 
     /// A throwaway Hermes root laid out like `~/.hermes`, with snapshots under `profiles/<name>/`.
@@ -67,8 +72,7 @@ enum Fixtures {
     /// One event file where the observer puts it: `events/<segment>/<sequence>-<event_id>.json` under the
     /// profile's home (`nil` is the default home). `body` replaces the encoded event, for corrupt files.
     static func publish(_ event: [String: Any], profile: String?, root: URL, segment: String = "000001", body: Data? = nil) throws {
-        let home = profile.map { root.appendingPathComponent("profiles/\($0)", isDirectory: true) } ?? root
-        let directory = home.appendingPathComponent("\(BridgeLocation.eventsSuffix)/\(segment)", isDirectory: true)
+        let directory = home(profile, root: root).appendingPathComponent("\(BridgeLocation.eventsSuffix)/\(segment)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let file = EventFile(segment: segment, sequence: event["sequence"] as! Int, eventID: event["event_id"] as! String)
         try (body ?? JSONSerialization.data(withJSONObject: event, options: .sortedKeys))
@@ -127,8 +131,49 @@ enum Fixtures {
         ]
     }
 
+    /// This test process's start as Hermes records a gateway's on macOS: creation time in centiseconds since the epoch.
+    /// The process stands in for a live gateway, so a status file must carry its real start to pass the pid-reuse guard.
+    static let gatewayStartTime = Int(GatewayStatus.processStart(getpid())!)
+    static let gatewayStarted = Date(timeIntervalSince1970: Double(gatewayStartTime) / 100)
+
+    /// Hermes's `gateway_state.json` for `pid`, started at `gatewayStartTime`. The command line and agent keys ride
+    /// along because the app must never map them; `also` edits the record further.
+    static func gatewayStatus(pid: Int32 = getpid(), served: [String] = [],
+                              also: (inout [String: Any]) -> Void = { _ in }) throws -> Data {
+        var record: [String: Any] = [
+            "pid": pid, "kind": "hermes-gateway", "argv": ["hermes", "gateway", "run"], "start_time": gatewayStartTime,
+            "gateway_state": "running", "active_agents": 1, "served_profiles": served,
+            "platforms": ["discord": ["state": "connected"]],
+        ]
+        also(&record)
+        return try JSONSerialization.data(withJSONObject: record)
+    }
+
+    /// Writes `body` as the `gateway_state.json` of a profile's home (`nil` is the root), and returns that file.
+    @discardableResult
+    static func writeGatewayStatus(_ body: Data, profile: String?, root: URL) throws -> URL {
+        let file = home(profile, root: root).appendingPathComponent(GatewayStatus.fileName)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try body.write(to: file)
+        return file
+    }
+
+    /// A profile's home under `root`: `profiles/<name>`, or the root itself for `nil`.
+    static func home(_ profile: String?, root: URL) -> URL {
+        profile.map { root.appendingPathComponent("profiles/\($0)", isDirectory: true) } ?? root
+    }
+
+    /// A pid whose process has exited and been reaped.
+    static let deadPID: Int32 = {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try! process.run()
+        process.waitUntilExit()
+        return process.processIdentifier
+    }()
+
     static func write(_ body: Data, profile: String, root: URL) throws {
-        let directory = root.appendingPathComponent("profiles/\(profile)/hermes-context/v1", isDirectory: true)
+        let directory = home(profile, root: root).appendingPathComponent(BridgeLocation.snapshotSuffix).deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let temporary = directory.appendingPathComponent(".snapshot.json.\(UUID().uuidString).tmp")
         try body.write(to: temporary)

@@ -177,16 +177,24 @@ import Testing
 
     /// The headless check's output for a Hermes root holding one profile's snapshot, read at `now`.
     static func headless(profile: String, snapshot: Data) throws -> [String: Any] {
+        try headless { root in try Self.write(snapshot, to: root.appendingPathComponent("profiles/\(profile)/\(BridgeLocation.snapshotSuffix)")) }
+    }
+
+    static func write(_ data: Data, to file: URL) throws {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: file)
+    }
+
+    /// The headless check's output for a throwaway Hermes root that `populate` lays out, read at `clock`.
+    static func headless(at clock: Date = now, _ populate: (URL) throws -> Void) throws -> [String: Any] {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("hermes-context-headless-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let file = root.appendingPathComponent("profiles/\(profile)/\(BridgeLocation.snapshotSuffix)")
-        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try snapshot.write(to: file)
+        try populate(root)
         let output = root.appendingPathComponent("check.json")
         var body: [String: Any] = [:]
         try withSettings { settings, _ in
             let check = HeadlessCheck(output: output, seconds: nil, defaultsSuite: nil)
-            LiveStore(location: BridgeLocation(root: root), settings: settings, check: check, clock: { now }).reload()
+            LiveStore(location: BridgeLocation(root: root), settings: settings, check: check, clock: { clock }).reload()
             body = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: output)) as? [String: Any])
         }
         return body
@@ -210,6 +218,19 @@ import Testing
         let diagnostics = body["diagnostics"] as? [[String: Any]] ?? []
         #expect(diagnostics.map { "\($0["profile"] ?? ""): \($0["message"] ?? "")" } == [
             "beta: A Hermes update switched off session titles and tool history. Rerun the install line for the latest Hermes Context.",
+        ])
+    }
+
+    /// A gateway Hermes runs (this test process, two minutes in) with no snapshot at all.
+    @Test func headlessOutputCarriesTheNotReportingLine() throws {
+        let started = try #require(GatewayStatus.processStart(getpid()))
+        let status: [String: Any] = ["pid": getpid(), "gateway_state": "running", "served_profiles": [String](), "start_time": Int(started)]
+        let body = try Self.headless(at: Date(timeIntervalSince1970: started / 100 + 120)) { root in
+            try Self.write(JSONSerialization.data(withJSONObject: status), to: root.appendingPathComponent("profiles/beta/\(GatewayStatus.fileName)"))
+        }
+        let diagnostics = body["diagnostics"] as? [[String: Any]] ?? []
+        #expect(diagnostics.map { "\($0["profile"] ?? ""): \($0["message"] ?? "")" } == [
+            "beta: Hermes runs beta, but Hermes Context gets nothing from it. Rerun the install line.",
         ])
     }
 }

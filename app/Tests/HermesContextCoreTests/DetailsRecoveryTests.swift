@@ -338,9 +338,11 @@ import Testing
 }
 
 extension BridgeState {
-    static func reading(_ profiles: [String: String]) throws -> BridgeState {
+    /// One read of a throwaway Hermes root holding `profiles`, after `populate` adds anything else to it.
+    static func reading(_ profiles: [String: String], populate: (URL) throws -> Void = { _ in }) throws -> BridgeState {
         let root = try Fixtures.hermesRoot(profiles)
         defer { try? FileManager.default.removeItem(at: root) }
+        try populate(root)
         var state = BridgeState()
         state.apply(BridgeReading.read(BridgeLocation(root: root)))
         return state

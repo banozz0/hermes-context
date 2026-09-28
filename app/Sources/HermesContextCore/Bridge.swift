@@ -43,6 +43,22 @@ public struct BridgeLocation: Sendable {
             .map { (Self.profile(of: $0), $0) }
     }
 
+    /// When each profile Hermes runs right now started, keyed by the snapshot file its plugin should publish. Hermes's
+    /// own rule: a profile runs when its `gateway_state.json` names a live gateway (`GatewayStatus.running`), or the
+    /// root's does and lists it in `served_profiles`. A status file that is missing, unreadable or reshaped runs nothing.
+    public func gatewayStarts(fileManager: FileManager = .default) -> [URL: Date] {
+        let rootGateway = GatewayStatus.running(in: root)
+        let served = rootGateway?.servedProfiles ?? []
+        var started: [URL: Date] = [:]
+        for home in homes(fileManager: fileManager) {
+            let snapshot = home.appendingPathComponent(Self.snapshotSuffix)
+            let own = home == root ? rootGateway : GatewayStatus.running(in: home)
+            let gateway = own ?? (served.contains(Self.profile(of: snapshot)) ? rootGateway : nil)
+            started[snapshot] = gateway?.startedAt
+        }
+        return started
+    }
+
     /// The profile a bridge path belongs to, as Hermes names it: `profiles/<name>/hermes-context/v1/<entry>`,
     /// else `default` for the root home.
     static func profile(of entry: URL) -> String {
@@ -108,6 +124,50 @@ private extension Character {
     var isASCIIDigit: Bool { ("0"..."9").contains(self) }
 }
 
+/// A home's `gateway_state.json`, read-only. The decoder maps these four fields and nothing else: the file also holds
+/// the gateway's command line and agent lists, which never enter the app.
+struct GatewayStatus: Decodable {
+    static let fileName = "gateway_state.json"
+
+    let pid: Int?
+    let state: String?
+    let servedProfiles: [String]?
+    /// The gateway process's creation time on macOS, in centiseconds since the epoch.
+    let startTime: Double?
+
+    private enum CodingKeys: String, CodingKey {
+        case pid, state = "gateway_state", servedProfiles = "served_profiles", startTime = "start_time"
+    }
+
+    var startedAt: Date? { startTime.map { Date(timeIntervalSince1970: $0 / 100) } }
+
+    /// Hermes's own start-time comparison allows 2 seconds of drift (macOS adjusts its boot time).
+    static let startDrift: Double = 200
+
+    /// The home's gateway when its file says it serves (`running`, or `degraded` with some platforms parked) and its
+    /// pid is live and still the process that wrote the file: Hermes's own guard against a recycled pid. A file with
+    /// no start time proves nothing, so it runs nothing.
+    static func running(in home: URL) -> GatewayStatus? {
+        guard let data = try? Data(contentsOf: home.appendingPathComponent(fileName)),
+              let status = try? JSONDecoder().decode(GatewayStatus.self, from: data),
+              ["running", "degraded"].contains(status.state),
+              let recorded = status.startTime, let pid = status.pid.flatMap(pid_t.init(exactly:)), pid > 0 else { return nil }
+        guard let live = processStart(pid), abs(live - recorded) <= startDrift else { return nil }
+        return status
+    }
+
+    /// A live process's creation time as Hermes records it on macOS (psutil's `create_time`, in centiseconds), from
+    /// the kernel's process table, which lists every user's processes; `nil` when no process has that pid.
+    static func processStart(_ pid: pid_t) -> Double? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&name, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let start = info.kp_proc.p_starttime
+        return ((Double(start.tv_sec) + Double(start.tv_usec) / 1_000_000) * 100).rounded()
+    }
+}
+
 /// One read of the whole bridge. A bad profile file is reported, never allowed to blank the others.
 public struct BridgeReading: Sendable {
     public struct Entry: Sendable {
@@ -116,6 +176,8 @@ public struct BridgeReading: Sendable {
     }
 
     public let entries: [Entry]
+    /// `BridgeLocation.gatewayStarts` at the time of this read.
+    public let gatewayStarts: [URL: Date]
 
     public var snapshots: [ProfileSnapshot] { entries.compactMap { try? $0.result.get() } }
     public var failures: [BridgeFailure] {
@@ -129,7 +191,7 @@ public struct BridgeReading: Sendable {
             } catch {
                 return Entry(file: file, result: .failure(BridgeFailure(file: file, reason: BridgeFailure.describe(error))))
             }
-        })
+        }, gatewayStarts: location.gatewayStarts())
     }
 }
 
@@ -165,6 +227,8 @@ public struct BridgeDiagnostic: Equatable, Sendable, Identifiable {
         case skippedEvents(count: Int)
         /// The live plugin reports features a Hermes update switched off.
         case degraded([DegradedFeature])
+        /// Hermes runs the profile's gateway, yet its snapshot is missing or Offline.
+        case notReporting
     }
 
     public let file: URL
@@ -182,6 +246,8 @@ public struct BridgeDiagnostic: Equatable, Sendable, Identifiable {
             "History skipped \(count) event record\(count == 1 ? "" : "s"): missing, corrupt or unsupported."
         case .degraded(let features):
             "\(Self.lostSentence(features)) Rerun the install line for the latest Hermes Context."
+        case .notReporting:
+            "Hermes runs \(profile), but Hermes Context gets nothing from it. Rerun the install line."
         }
     }
 
@@ -206,7 +272,11 @@ public struct BridgeDiagnostic: Equatable, Sendable, Identifiable {
 /// its last good snapshot (still aging to Offline by heartbeat) and gains a diagnostic; healthy
 /// profiles are never touched. A file that disappears takes its profile with it.
 public struct BridgeState: Sendable {
+    /// A gateway's first minute is normal startup: its plugin has not beaten yet.
+    static let startupGrace: TimeInterval = 60
+
     private var lastGood: [URL: ProfileSnapshot] = [:]
+    private var gatewayStarts: [URL: Date] = [:]
     public private(set) var snapshots: [ProfileSnapshot] = []
     public private(set) var failures: [BridgeFailure] = []
 
@@ -214,6 +284,7 @@ public struct BridgeState: Sendable {
 
     public mutating func apply(_ reading: BridgeReading) {
         var kept: [URL: ProfileSnapshot] = [:]
+        gatewayStarts = reading.gatewayStarts
         snapshots = []
         failures = []
         for entry in reading.entries {
@@ -229,23 +300,32 @@ public struct BridgeState: Sendable {
         lastGood = kept
     }
 
-    /// Read failures first, then offline gateways, then live plugins that lost features, in discovery order.
-    /// An offline profile's degraded report is from a gateway that is gone, so only its offline line shows.
+    /// Read failures first, then running gateways whose plugin is silent, then offline gateways, then live plugins
+    /// that lost features, in discovery order. A file gets one line: a silent plugin's replaces its offline one, and
+    /// an offline profile's degraded report is from a gateway that is gone.
     public func diagnostics(now: Date) -> [BridgeDiagnostic] {
         let failed = failures.map { failure in
             BridgeDiagnostic(file: failure.file, profile: failure.profile,
                              problem: .unreadable(reason: failure.reason, retained: lastGood[failure.file] != nil))
         }
         let failedFiles = Set(failures.map(\.file))
+        let silentFiles = Set(gatewayStarts.filter { file, started in
+            let quiet = lastGood[file]?.isOffline(at: now) ?? true  // no snapshot, or one gone Offline
+            return !failedFiles.contains(file) && quiet && now.timeIntervalSince(started) >= Self.startupGrace
+        }.keys)
+        let silent = silentFiles.sorted { $0.path < $1.path }.map {
+            BridgeDiagnostic(file: $0, profile: BridgeLocation.profile(of: $0), problem: .notReporting)
+        }
+        let explained = failedFiles.union(silentFiles)
         var offline: [BridgeDiagnostic] = []
         var degraded: [BridgeDiagnostic] = []
-        for (file, snapshot) in lastGood.sorted(by: { $0.key.path < $1.key.path }) where !failedFiles.contains(file) {
+        for (file, snapshot) in lastGood.sorted(by: { $0.key.path < $1.key.path }) where !explained.contains(file) {
             if snapshot.isOffline(at: now) {
                 offline.append(BridgeDiagnostic(file: file, profile: snapshot.profile, problem: .offline(lastHeartbeat: snapshot.heartbeatAt)))
             } else if !snapshot.degraded.isEmpty {
                 degraded.append(BridgeDiagnostic(file: file, profile: snapshot.profile, problem: .degraded(snapshot.degraded)))
             }
         }
-        return failed + offline + degraded
+        return failed + silent + offline + degraded
     }
 }
