@@ -28,40 +28,49 @@ def registered_hooks() -> dict:
     return context.hooks
 
 
-def _read(node: ast.AST, paths: dict[str, str]) -> str | None:
-    """The key path `node` reads, `name.get("key")` or `name["key"]`, when `name` holds a path in `paths`."""
+def _read(node: ast.AST, paths: dict[str, str]) -> tuple[ast.Name, str] | None:
+    """`(name, key path)` when `node` reads `name.get("key")` or `name["key"]` and `name` holds a path in `paths`,
+    or chains onto such a read, like `payload.get("usage", {}).get("prompt_tokens")`."""
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" and node.args:
         base, key = node.func.value, node.args[0]
     elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load):
         base, key = node.value, node.slice
     else:
         return None
-    if isinstance(base, ast.Name) and base.id in paths and isinstance(key, ast.Constant) and isinstance(key.value, str):
-        return paths[base.id] + key.value
+    if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+        return None
+    if isinstance(base, ast.Name) and base.id in paths:
+        return base, paths[base.id] + key.value
+    if inner := _read(base, paths):
+        return inner[0], f"{inner[1]}.{key.value}"
     return None
 
 
 def payload_reads(function, param: str) -> set[str]:
     """Keys `function` reads from its payload `param`, as `key` or `key.subkey`, including in module helpers it
-    hands the payload to, like `_session_id(payload)`."""
-    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    hands the payload to, like `_session_id(payload)`. Any other use of the payload fails, so no read goes unseen."""
+    lines, first = inspect.getsourcelines(function)
+    tree = ast.parse(textwrap.dedent("".join(lines)))
     root = {param: ""}
     paths = dict(root)
     for node in ast.walk(tree):  # `usage = payload.get("usage")` makes `usage` hold the path `usage.`
-        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and (key := _read(node.value, root)):
-            paths[node.targets[0].id] = key + "."
-    keys = set()
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and (read := _read(node.value, root)):
+            paths[node.targets[0].id] = read[1] + "."
+    keys, followed = set(), set()
     for node in ast.walk(tree):
-        if key := _read(node, paths):
-            keys.add(key)
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            helper = function.__globals__.get(node.func.id)
-            if not inspect.isfunction(helper):
-                continue
+        if read := _read(node, paths):
+            followed.add(read[0])
+            keys.add(read[1])
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+              and inspect.isfunction(helper := function.__globals__.get(node.func.id))):
             params = list(inspect.signature(helper).parameters)
             for index, arg in enumerate(node.args):
                 if isinstance(arg, ast.Name) and arg.id == param:
+                    followed.add(arg)
                     keys |= payload_reads(helper, params[index])
+    unseen = [first + node.lineno - 1 for node in ast.walk(tree)
+              if isinstance(node, ast.Name) and node.id == param and node not in followed]
+    assert not unseen, f"{function.__qualname__} uses its payload where payload_reads cannot follow, at lines {unseen}"
     return keys
 
 
@@ -115,7 +124,12 @@ class HermesSource:
                 yield from ((path, node) for node in self.nodes[path])
 
     def sites(self, hook: str) -> list[tuple[Path, ast.Call]]:
-        """Every call that dispatches `hook`: its name first, then a keyword payload."""
+        """Every call that dispatches `hook`: its name first, then a keyword payload.
+
+        A call handing a wrapper the payload positionally is not one. Today only the CLI's and the TUI's own
+        session-boundary notifiers fire `on_session_reset` that way: neither is Discord, and neither passes the old
+        session id without which the plugin's reset does nothing.
+        """
         return [(path, node) for path, node in self._nodes(f'"{hook}"', f"'{hook}'")
                 if isinstance(node, ast.Call) and node.keywords and node.args
                 and isinstance(node.args[0], ast.Constant) and node.args[0].value == hook]
