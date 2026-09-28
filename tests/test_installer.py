@@ -1,6 +1,7 @@
 """install.sh end to end against a throwaway Hermes home; the real `hermes` CLI does the plugin work."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -11,25 +12,39 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 PLUGIN = "hermes-context-observer"
 APP = "HermesContext.app"
+SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
-pytestmark = pytest.mark.skipif(shutil.which("hermes") is None or shutil.which("ditto") is None,
-                                reason="needs the hermes CLI and macOS ditto")
+pytestmark = pytest.mark.skipif(shutil.which("ditto") is None, reason="install.sh runs on macOS only")
+
+
+def field(output: str, label: str, default: str = "") -> str:
+    """The value of a `Label: value` line in a Hermes command's output."""
+    return next((line.split(":", 1)[1].strip() for line in output.splitlines() if line.startswith(f"{label}:")), default)
+
+
+def hermes_keeps_its_launchers() -> bool:
+    """False unless Hermes's install stamp is readable and names an update mechanism other than `self`.
+
+    A Hermes that manages its own Python (0.21.5 on) builds a Python into any throwaway HERMES_HOME it runs under and
+    repoints its real `hermes` launchers there (seen 2026-09-27). `--version` is a metadata flag, so asking is safe.
+    """
+    shown = subprocess.run(["hermes", "--version"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    try:
+        stamp = json.loads((Path(field(shown.stdout, "Install directory")) / "install-stamp.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(stamp, dict) and stamp.get("updateMechanism", "self") != "self"
 
 
 @pytest.fixture
-def world(tmp_path: Path) -> dict:
-    """A throwaway HOME and Hermes home with profiles default and alpha, a stand-in app zip and a stamped script."""
+def bench(tmp_path: Path) -> dict:
+    """A throwaway HOME and Hermes home, a stand-in app zip and a stamped script; no Hermes command has run."""
     home, hermes_home, install_dir = tmp_path / "home", tmp_path / "hermes", tmp_path / "Applications"
     home.mkdir()
     hermes_home.mkdir()
     env = {key: value for key, value in os.environ.items() if not key.startswith("HERMES")}
-    # Lazy installs off, or the CLI syncs dependencies into this throwaway home and republishes the real install's
-    # launchers pointing at it.
+    # Lazy installs off, or the CLI syncs dependencies into this throwaway home.
     env.update(HOME=str(home), HERMES_HOME=str(hermes_home), HERMES_DISABLE_LAZY_INSTALLS="1")
-    subprocess.run(["hermes", "profile", "create", "alpha", "--no-alias", "--no-skills"], env=env, check=True,
-                   capture_output=True)
-    # A display name turns the default row's label into `Main Bot (default)`.
-    subprocess.run(["hermes", "profile", "rename", "default", "Main Bot"], env=env, check=True, capture_output=True)
     binary = tmp_path / "zip" / APP / "Contents" / "MacOS" / "HermesContext"
     binary.parent.mkdir(parents=True)
     binary.write_text("#!/bin/sh\n")
@@ -49,6 +64,22 @@ def world(tmp_path: Path) -> dict:
     return {"env": env, "script": script, "install_dir": install_dir, "homes": homes, "home": home}
 
 
+@pytest.fixture
+def world(request) -> dict:
+    """The bench with profiles default and alpha, made by the real `hermes` CLI."""
+    if shutil.which("hermes") is None:
+        pytest.skip("needs the hermes CLI")
+    if not hermes_keeps_its_launchers():
+        pytest.skip("this Hermes may repoint its real launchers at a throwaway HERMES_HOME; the live install proves install.sh")
+    bench = request.getfixturevalue("bench")
+    env = bench["env"]
+    subprocess.run(["hermes", "profile", "create", "alpha", "--no-alias", "--no-skills"], env=env, check=True,
+                   capture_output=True)
+    # A display name turns the default row's label into `Main Bot (default)`.
+    subprocess.run(["hermes", "profile", "rename", "default", "Main Bot"], env=env, check=True, capture_output=True)
+    return bench
+
+
 def run(world: dict, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
     """Fed on stdin, as `curl … | sh -s -- <args>` runs it, so a child reading stdin would eat the script."""
     with world["script"].open() as script:
@@ -66,8 +97,7 @@ def statuses(world: dict) -> dict[str, str]:
     def status(profile: str) -> str:
         shown = subprocess.run(["hermes", "-p", profile, "plugins", "show", PLUGIN], env=world["env"],
                                capture_output=True, text=True)
-        return next((line.split(":", 1)[1].strip() for line in shown.stdout.splitlines()
-                     if line.startswith("Status:")), "absent")
+        return field(shown.stdout, "Status", "absent")
     return {profile: status(profile) for profile in world["homes"]}
 
 
@@ -124,19 +154,34 @@ def test_install_rerun_uninstall_and_purge(world: dict):
     assert real_hermes_plugins() == before, "the real Hermes home was touched"
 
 
-def test_preflight_stops_before_touching_anything(world: dict, tmp_path: Path):
-    no_hermes = dict(world["env"], PATH="/usr/bin:/bin:/usr/sbin:/sbin")
-    refused = run(world, env=no_hermes)
+def shim(bench: dict, name: str, body: str) -> dict:
+    """The bench's environment on the system PATH, with `name` a stand-in command running the given shell body."""
+    directory = bench["home"].parent / f"shim-{name}"
+    directory.mkdir()
+    (directory / name).write_text(f"#!/bin/sh\n{body}\n")
+    (directory / name).chmod(0o755)
+    return dict(bench["env"], PATH=f"{directory}:{SYSTEM_PATH}")
+
+
+def test_preflight_stops_before_touching_anything(bench: dict):
+    refused = run(bench, env=dict(bench["env"], PATH=SYSTEM_PATH))
     assert refused.returncode != 0
     assert "needs Hermes" in refused.stderr
 
-    shim = tmp_path / "old-macos"
-    shim.mkdir()
-    (shim / "sw_vers").write_text("#!/bin/sh\necho 13.6\n")
-    (shim / "sw_vers").chmod(0o755)
-    old = run(world, env=dict(world["env"], PATH=f"{shim}:{world['env']['PATH']}"))
+    old = run(bench, env=shim(bench, "sw_vers", "echo 13.6"))
     assert old.returncode != 0
     assert "needs macOS 14 or later; this Mac runs 13.6" in old.stderr
 
-    assert not world["install_dir"].exists()
-    assert not any((home / "plugins" / PLUGIN).exists() for home in world["homes"].values())
+    outdated = run(bench, env=shim(bench, "hermes", 'echo "Hermes Agent v0.21.4 (2026.9.21)"'))
+    assert outdated.returncode != 0
+    assert "needs Hermes 0.21.5 or later; this Mac runs 0.21.4. Run `hermes update` first." in outdated.stderr
+
+    assert not bench["install_dir"].exists()
+    assert not any((home / "plugins" / PLUGIN).exists() for home in bench["homes"].values())
+
+
+def test_preflight_passes_a_hermes_it_cannot_date(bench: dict):
+    """An unrecognised `--version` line never blocks; the next step (listing profiles) runs."""
+    shimmed = run(bench, env=shim(bench, "hermes", 'echo "Hermes Agent (dev build)"'))
+    assert "needs Hermes 0" not in shimmed.stderr
+    assert "Hermes lists no profiles." in shimmed.stderr

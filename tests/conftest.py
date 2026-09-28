@@ -1,29 +1,21 @@
 from __future__ import annotations
 
-import importlib.util
 import json
-import os
 from pathlib import Path
 
 import pytest
 
+from hermes_env import hermes_source
+
 
 @pytest.fixture
-def hermes(monkeypatch):
-    """Hermes's source checkout on the path: `HERMES_AGENT_SOURCE`, else the one the running Python imports.
-
-    The checkout goes first even when Hermes is installed editable, whose finder only knows modules from install time.
-    Lazy installs stay off: under any Python but its managed one, Hermes's first import of its launch bootstrap
-    syncs dependencies into the test's HERMES_HOME, rewrites the real install's launchers and re-executes the process.
-    """
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
-    source = os.environ.get("HERMES_AGENT_SOURCE")
-    if not source:
-        spec = importlib.util.find_spec("hermes_constants")
-        if spec is None or spec.origin is None:
-            pytest.skip("the plugin integration seam needs Hermes: run under Hermes's Python or set HERMES_AGENT_SOURCE")
-        source = str(Path(spec.origin).parent)
+def hermes(tmp_path: Path, monkeypatch):
+    """Hermes's source checkout first on the path, and the test's own directory as HERMES_HOME."""
+    source = hermes_source()
+    if source is None:
+        pytest.skip("the plugin integration seam needs Hermes: run under Hermes's Python or set HERMES_AGENT_SOURCE")
     monkeypatch.syspath_prepend(source)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
 
 @pytest.fixture

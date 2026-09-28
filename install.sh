@@ -12,6 +12,7 @@ set -eu
 VERSION="@VERSION@"
 COMMIT="@COMMIT@"
 REPO="banozz0/hermes-context"
+MIN_HERMES="0.21.5"  # the first Hermes whose `plugins install --enable` reloads a running gateway
 PLUGIN="hermes-context-observer"
 APP="HermesContext.app"
 
@@ -33,6 +34,19 @@ app_dirs() {
 }
 
 has_hermes() { command -v hermes >/dev/null 2>&1; }
+
+# The x.y.z of `hermes --version`'s first line (`Hermes Agent v0.21.5+3783.gf9a57d5 (2026.9.24)`), or nothing.
+hermes_version() {
+    hermes --version </dev/null 2>/dev/null | sed -n '1s/.*v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p'
+}
+
+# True when dotted version $1 is at least $2.
+at_least() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        split(a, x, "."); split(b, y, ".")
+        for (i = 1; i <= 3; i++) { if (x[i] + 0 != y[i] + 0) exit !(x[i] + 0 > y[i] + 0) }
+    }'
+}
 
 # Every profile id Hermes knows, default included, read from its table: the label runs up to the
 # model just before the Gateway column (running or stopped), and a display name shows as `Name (id)`.
@@ -69,6 +83,10 @@ install() {
     macos=$(sw_vers -productVersion)
     [ "${macos%%.*}" -ge 14 ] || die "needs macOS 14 or later; this Mac runs $macos."
     has_hermes || die "needs Hermes: there is no \`hermes\` command on your PATH. Install Hermes first."
+    found=$(hermes_version)
+    # A version it cannot read never blocks: the plugin install below is the real test.
+    [ -z "$found" ] || at_least "$found" "$MIN_HERMES" \
+        || die "needs Hermes $MIN_HERMES or later; this Mac runs $found. Run \`hermes update\` first."
     printf '%s' "$COMMIT" | grep -Eq '^[0-9a-f]{40}$' || die "this install.sh was not stamped by release.sh."
     names=$(profiles)
     [ -n "$names" ] || die "Hermes lists no profiles."

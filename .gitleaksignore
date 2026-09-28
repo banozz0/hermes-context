@@ -1,0 +1,2 @@
+# A privacy sentinel string in a test, not a secret: the variable was named `secret` (renamed `sentinel` since).
+f8de3f36908fa2aca19fb26815d7c6b5a6979c80:app/Tests/HermesContextCoreTests/TelemetryStoreTests.swift:generic-api-key:166

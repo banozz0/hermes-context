@@ -1,7 +1,6 @@
 """Live Hermes plugin-discovery probe using only temporary profile homes."""
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import shutil
@@ -11,14 +10,14 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from hermes_env import hermes_source  # importing it turns Hermes's lazy installs off
+
 PROJECT = Path(__file__).resolve().parents[1]
 PLUGIN_SOURCE = PROJECT / "hermes_context_observer"
-os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"  # Else Hermes's launch bootstrap rewrites the real install; see conftest.
-HERMES_SPEC = importlib.util.find_spec("hermes_constants")
-HERMES_SOURCE = os.environ.get("HERMES_AGENT_SOURCE") or (HERMES_SPEC and HERMES_SPEC.origin and str(Path(HERMES_SPEC.origin).parent))
+HERMES_SOURCE = hermes_source()
 if not HERMES_SOURCE:
     raise SystemExit("Hermes not found: run this under Hermes's Python or set HERMES_AGENT_SOURCE")
-sys.path.insert(0, HERMES_SOURCE)  # First even when Hermes is installed editable: that finder only knows install-time modules.
+sys.path.insert(0, HERMES_SOURCE)
 
 
 def install_plugin(home: Path) -> None:
