@@ -141,7 +141,8 @@ struct GatewayStatus: Decodable {
 
     var startedAt: Date? { startTime.map { Date(timeIntervalSince1970: $0 / 100) } }
 
-    /// Hermes's own start-time comparison allows 2 seconds of drift (macOS adjusts its boot time).
+    /// Hermes's recycled-pid guard compares start times exactly; the app allows the 2 seconds of drift Hermes's own
+    /// reconciliation allows (`start_time_fingerprints_match`: macOS adjusts its boot time, and rounding can differ).
     static let startDrift: Double = 200
 
     /// The home's gateway when its file says it serves (`running`, or `degraded` with some platforms parked) and its

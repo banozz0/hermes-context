@@ -174,7 +174,7 @@ import Testing
     }
 
     /// A live pid whose start time is not the recorded one belongs to another process: the gateway that wrote the file
-    /// is gone. Hermes allows 2 seconds of drift.
+    /// is gone. The app allows the 2 seconds of drift Hermes's reconciliation allows.
     @Test func recycledPidRunsNothing() throws {
         func lines(startOffBy offset: Int) throws -> [String] {
             try Self.lines { root in
