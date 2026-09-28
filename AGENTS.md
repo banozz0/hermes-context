@@ -7,6 +7,7 @@ macOS menu-bar app plus an observer-only Hermes plugin that shows every live Her
 - Swift app: `swift test --package-path app` → both suites pass. `app/bundle.sh` builds and ad-hoc signs `app/build/HermesContext.app`.
 - Headless app check (never draws on screen): see README → Native app, `HERMES_CONTEXT_HEADLESS=1`.
 - Installer: `tests/test_installer.py` (in the Python suite) runs `install.sh` against a throwaway Hermes home; its end-to-end case skips on a Hermes that manages its own Python. `release.sh` builds a release; publishing it is a separate step.
+- Nightly, `.github/workflows/hermes-compat.yml` runs the Python suite and the discovery probe on Linux against Hermes main and the latest release: a test that needs macOS skips itself there, and a break arrives as a `hermes-compat` issue.
 
 ## Rules the tests only partly enforce
 - Privacy is an allowlist. Snapshots, events, SQLite and exports carry only the fields `contracts/v1/*.schema.json` names; prompts, responses, tool arguments, results and error text never enter any of them. A new field is a contract change: schema, `validate_*`, Swift decoder and README together.
