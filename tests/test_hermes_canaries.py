@@ -166,6 +166,8 @@ def test_hermes_still_offers_every_hook_the_plugin_registers(hermes):
 
 def test_hermes_still_passes_every_payload_key_the_plugin_reads(hermes):
     reads = {hook: callback_reads(hook, callback) for hook, callback in registered_hooks().items()}
+    # The context number rides on this read, and a variable taken from the payload can still hide it.
+    assert "usage.prompt_tokens" in reads["post_api_request"], "payload_reads lost the context number's read"
     source = HermesSource(Path(hermes_source()))
     problems = []
     for hook, keys in sorted(reads.items()):
