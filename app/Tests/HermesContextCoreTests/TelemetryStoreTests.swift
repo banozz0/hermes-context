@@ -163,7 +163,7 @@ private extension TelemetryRecord {
     @Test func gapsAndRejectedRecordsSurfaceWithoutBlockingLaterEvents() throws {
         let bench = try Bench(fixture: false)
         defer { bench.remove() }
-        let secret = "PROMPT-SENTINEL-7f3a"
+        let sentinel = "PROMPT-SENTINEL-7f3a"
         func alpha(_ sequence: Int, _ edit: (inout [String: Any]) -> Void = { _ in }) throws {
             var event = Fixtures.event(profile: "alpha", sequence: sequence, session: "alpha-1")
             edit(&event)
@@ -172,8 +172,8 @@ private extension TelemetryRecord {
         try alpha(1)
         try alpha(3)  // 2 never arrives
         try alpha(4) { $0["contract_version"] = "hermes-context.v2" }
-        try alpha(5) { $0["current_tool"] = "terminal"; $0["prompt"] = secret }
-        try alpha(6) { $0["state"] = secret }
+        try alpha(5) { $0["current_tool"] = "terminal"; $0["prompt"] = sentinel }
+        try alpha(6) { $0["state"] = sentinel }
         try alpha(7) { $0["profile"] = "beta" }
         try alpha(8)
         try bench.publish(Fixtures.event(profile: "beta", sequence: 1, session: "beta-1"), profile: "beta", body: Data("{\"contract_version\":".utf8))
@@ -196,7 +196,7 @@ private extension TelemetryRecord {
         // No rejected record's contents reach the database, its log or its WAL.
         for suffix in ["", "-wal", "-shm"] {
             let bytes = (try? Data(contentsOf: URL(fileURLWithPath: bench.database.path + suffix))) ?? Data()
-            #expect(bytes.range(of: Data(secret.utf8)) == nil)
+            #expect(bytes.range(of: Data(sentinel.utf8)) == nil)
             #expect(bytes.range(of: Data("terminal".utf8)) == nil)
         }
     }
@@ -206,7 +206,7 @@ private extension TelemetryRecord {
     @Test func toolCallContentNeverReachesTheDatabase() throws {
         let bench = try Bench(fixture: false)
         defer { bench.remove() }
-        let secret = "TOOL-SENTINEL-91b2"
+        let sentinel = "TOOL-SENTINEL-91b2"
         let request = Fixtures.event(profile: "alpha", sequence: 1, session: "alpha-1")
         try bench.publish(request, profile: "alpha")
         func call(_ sequence: Int, _ edit: (inout [String: Any]) -> Void = { _ in }) throws {
@@ -215,13 +215,13 @@ private extension TelemetryRecord {
             try bench.publish(call, profile: "alpha")
         }
         try call(2)
-        try call(3) { $0["arguments"] = ["command": secret] }
-        try call(4) { $0["result"] = secret }
-        try call(5) { $0["error_message"] = secret }
-        try call(6) { $0["status"] = secret }
+        try call(3) { $0["arguments"] = ["command": sentinel] }
+        try call(4) { $0["result"] = sentinel }
+        try call(5) { $0["error_message"] = sentinel }
+        try call(6) { $0["status"] = sentinel }
         try call(7) { $0["estimated_tokens"] = -1 }
-        try call(8) { $0["request_event_id"] = secret }
-        try call(9) { $0["kind"] = secret }
+        try call(8) { $0["request_event_id"] = sentinel }
+        try call(9) { $0["kind"] = sentinel }
         try call(10) { $0["context"] = request["context"] }
         let store = try bench.open()
 
@@ -234,7 +234,7 @@ private extension TelemetryRecord {
         ])
         for suffix in ["", "-wal", "-shm"] {
             let bytes = (try? Data(contentsOf: URL(fileURLWithPath: bench.database.path + suffix))) ?? Data()
-            #expect(bytes.range(of: Data(secret.utf8)) == nil)
+            #expect(bytes.range(of: Data(sentinel.utf8)) == nil)
         }
     }
 
@@ -313,7 +313,7 @@ private extension TelemetryRecord {
         #expect(!approved.values.joined().contains { column in forbidden.contains { column.contains($0) } })
         // A tool's name is the one tool column: never a current tool, its arguments, result or error text.
         #expect(approved.values.joined().filter { $0.contains("tool") } == ["tool_name"])
-        // Private to Sven: the directory, the database and SQLite's own WAL and shared-memory files.
+        // Private to the user: the directory, the database and SQLite's own WAL and shared-memory files.
         func mode(_ path: String) throws -> Int { try #require(FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int) }
         #expect(try mode(bench.database.deletingLastPathComponent().path) == 0o700)
         for suffix in ["", "-wal", "-shm"] { #expect(try mode(bench.database.path + suffix) == 0o600) }

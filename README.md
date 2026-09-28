@@ -1,6 +1,8 @@
 # Hermes Context
 
-Standalone observer plugin, v1 file contract, and the native macOS menu-bar app that reads it. The tests never install or enable the plugin in a live gateway; `install.sh` does, on purpose.
+Live Hermes Discord sessions in your menu bar.
+
+A macOS menu-bar app for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It lists every Discord session your Hermes profiles are running, shows how full each one's context window is and whether it is working, waiting on you or idle, and keeps a private local history of context usage. It never stores a message.
 
 ## Install
 
@@ -8,7 +10,17 @@ Standalone observer plugin, v1 file contract, and the native macOS menu-bar app 
 curl -fsSL https://github.com/banozz0/hermes-context/releases/latest/download/install.sh | sh
 ```
 
-It needs macOS 14 or later and a `hermes` command on the PATH, and stops before changing anything when either is missing. It downloads the release's app into `/Applications` (else `~/Applications`), runs `hermes -p <profile> plugins install banozz0/hermes-context/hermes_context_observer --ref <commit> --enable --force` for every profile `hermes profile list` shows, default included, and opens the app. `plugins install --enable` asks a running gateway to reload its plugins over its control socket, so no restart is needed; when no gateway answers, the installer names those profiles and says to run `hermes gateway restart`. Because curl sets no quarantine flag, Gatekeeper never blocks the ad-hoc signed app. Run the same line again to connect a profile added later or to update: a profile already running this release's observer and an identical app are left alone; app and plugin always come from the one commit the release stamped into the script.
+You need:
+
+- macOS 14 or later, on Apple silicon or Intel.
+- Hermes Agent @MINVER@ or later, with the `hermes` command on your PATH.
+- A Hermes Discord gateway. Only Discord sessions are shown.
+
+The installer stops before changing anything when macOS or Hermes is missing. It downloads the app into `/Applications` (else `~/Applications`), runs `hermes -p <profile> plugins install banozz0/hermes-context/hermes_context_observer --ref <commit> --enable --force` for every profile `hermes profile list` shows, default included, and opens the app. `plugins install --enable` asks a running gateway to reload its plugins over its control socket, so no restart is needed; when no gateway answers, the installer names those profiles and says to run `hermes gateway restart`. Because curl sets no quarantine flag, Gatekeeper never blocks the ad-hoc signed app. The app and the plugin always come from the one commit the release stamped into the script.
+
+Run the same line again to connect a profile added later or to update. A profile already running this release's observer and an identical app are left alone.
+
+To uninstall:
 
 ```sh
 curl -fsSL https://github.com/banozz0/hermes-context/releases/latest/download/install.sh | sh -s -- --uninstall [--purge]
@@ -16,7 +28,32 @@ curl -fsSL https://github.com/banozz0/hermes-context/releases/latest/download/in
 
 Uninstall removes the plugin from every profile and deletes the app. History (`~/Library/Application Support/dev.banozz0.hermes-context`) and each profile's bridge files stay unless `--purge` is given.
 
-`release.sh` builds a release from a committed tree into `app/build/release`: the universal (Apple silicon and Intel), ad-hoc signed app as `HermesContext.zip`, and `install.sh` stamped with the version from `pyproject.toml` and the current commit. Publishing those two files as GitHub Release `v<version>` is a separate step. For a local build or a throwaway Hermes home, `HERMES_CONTEXT_PLUGIN_SOURCE` (a `file://<repo>#hermes_context_observer` URL), `HERMES_CONTEXT_APP_ZIP` (a local zip), `HERMES_CONTEXT_INSTALL_DIR` and `HERMES_CONTEXT_NO_OPEN=1` override the defaults.
+## What you see
+
+- The menu-bar item counts the sessions working right now and turns into a warning triangle when any session's context reaches your threshold (30% by default).
+- One flat list: sessions that need you, then working ones, then the rest by latest activity. Each row shows the Discord thread name, profile, state and context percent. **Live Status** adds channel, model and idle time; **Minimal** is one line per session.
+- Search by session name, profile, model or `#channel`.
+- Click a row for its details: context in tokens, model, current tool, timing, and an **Open Discord** button that jumps to the thread.
+- A session idle for 24 hours (1–168, in Settings) leaves the list and comes back as the same row on its next message.
+- When a gateway stops, its sessions stay on screen marked **Offline**.
+- **Insights** (⌘I) shows mean, median and peak context use per session, per profile and overall, exports your history as CSV or JSON, and clears it.
+
+## Privacy
+
+Everything stays on your Mac. The plugin writes only the metadata fields its JSON schemas allow: profile, Discord location, session name, state, model, context size and, per tool call, the tool's name, skill name, estimated result size, duration and status. Prompts, responses, tool arguments, tool results and error text never reach any file. The app reads those files, never writes Hermes state, sends no prompts, opens no network port and posts no notifications.
+
+## How it works
+
+An observer plugin in each Hermes profile writes an atomic snapshot of that profile's live Discord sessions, plus one small event file per model request and tool call, under `<profile-home>/hermes-context/v1/`. The app watches those files, shows the snapshots and imports the events into a local SQLite history. The rest of this README is the full contract and the app's exact behavior.
+
+## Development
+
+- Python observer tests, under Hermes's own Python: `uv run --no-project --with pytest --python ~/.hermes/hermes-agent/venv/bin/python python -m pytest -p no:cacheprovider`.
+- Swift app tests: `swift test --package-path app`.
+- Build: `app/bundle.sh` builds and ad-hoc signs `app/build/HermesContext.app`.
+- Release: `release.sh` builds a release from a committed tree into `app/build/release`: the universal (Apple silicon and Intel), ad-hoc signed app as `HermesContext.zip`, and `install.sh` stamped with the version from `pyproject.toml` and the current commit. Publishing those two files as GitHub Release `v<version>` is a separate step.
+- For a local build or a throwaway Hermes home, `HERMES_CONTEXT_PLUGIN_SOURCE` (a `file://<repo>#hermes_context_observer` URL), `HERMES_CONTEXT_APP_ZIP` (a local zip), `HERMES_CONTEXT_INSTALL_DIR` and `HERMES_CONTEXT_NO_OPEN=1` override the installer's defaults.
+- Tests never install the plugin into a live Hermes profile or restart a gateway; they use throwaway homes. What each suite covers is under **Verification without live gateways** and **Check it** below.
 
 ## Contract
 
@@ -38,8 +75,8 @@ On activation the gateway owner first backfills: it reads Hermes's gateway routi
 
 ## Verification without live gateways
 
-- `uv run --no-project --with pytest --python /Users/sven/.hermes/hermes-agent/venv/bin/python python -m pytest -p no:cacheprovider` checks tool-call records (shared sequence, request link, identity across replay and restart, admission, the allowlist, the JSON schema agreeing with `validate_event`, and a privacy sentinel in arguments, results and error messages through the registered hook), atomic replacement under concurrent reads, same-home two-observer and cross-process reconciliation, strict privacy allowlisting, fixed replay fixtures, event identity/segment rotation/replay, profile/thread isolation, reset lineage, gateway-down/CLI-alive Offline, no-traffic activation, restart recovery, install-time backfill from the routing index (names, context, skipped lanes, no events, and a later live request landing on the same row) and a stale snapshot's idle reset surviving a transaction that writes nothing. The no-project mode avoids creating a local virtualenv or lockfile; the Hermes interpreter supplies upstream dependencies.
-- `/Users/sven/.hermes/hermes-agent/venv/bin/python tests/probe_plugin_discovery.py` loads the plugin through Hermes's actual plugin manager in disposable A→B→A profile homes, holds/releases Hermes's real runtime lock to emulate gateway ownership, checks same-home two-manager no-loss, CLI-alive gateway-down Offline, immediate no-traffic startup snapshots, a no-traffic restart from a stale saved snapshot, and a third profile whose already-routed lane is backfilled at discovery, fires lifecycle, request and tool-call hooks with task-local Discord routing, verifies profile-isolated files with no argument, result or error text in any bridge file, and removes the homes. `HERMES_CONTEXT_PROBE_KEEP=<dir>` first copies both profiles' bridge trees to `<dir>/profiles/<name>/hermes-context`, a root the headless app can import. `HERMES_AGENT_SOURCE` overrides the source checkout path if needed. Do not copy the plugin into the real profile or restart the gateway during this phase.
+- `uv run --no-project --with pytest --python ~/.hermes/hermes-agent/venv/bin/python python -m pytest -p no:cacheprovider` checks tool-call records (shared sequence, request link, identity across replay and restart, admission, the allowlist, the JSON schema agreeing with `validate_event`, and a privacy sentinel in arguments, results and error messages through the registered hook), atomic replacement under concurrent reads, same-home two-observer and cross-process reconciliation, strict privacy allowlisting, fixed replay fixtures, event identity/segment rotation/replay, profile/thread isolation, reset lineage, gateway-down/CLI-alive Offline, no-traffic activation, restart recovery, install-time backfill from the routing index (names, context, skipped lanes, no events, and a later live request landing on the same row) and a stale snapshot's idle reset surviving a transaction that writes nothing. The no-project mode avoids creating a local virtualenv or lockfile; the Hermes interpreter supplies upstream dependencies.
+- `~/.hermes/hermes-agent/venv/bin/python tests/probe_plugin_discovery.py` loads the plugin through Hermes's actual plugin manager in disposable A→B→A profile homes, holds/releases Hermes's real runtime lock to emulate gateway ownership, checks same-home two-manager no-loss, CLI-alive gateway-down Offline, immediate no-traffic startup snapshots, a no-traffic restart from a stale saved snapshot, and a third profile whose already-routed lane is backfilled at discovery, fires lifecycle, request and tool-call hooks with task-local Discord routing, verifies profile-isolated files with no argument, result or error text in any bridge file, and removes the homes. `HERMES_CONTEXT_PROBE_KEEP=<dir>` first copies both profiles' bridge trees to `<dir>/profiles/<name>/hermes-context`, a root the headless app can import. Both find Hermes's source checkout through the Python running them; `HERMES_AGENT_SOURCE` points them at another. Do not copy the plugin into the real profile or restart the gateway during this phase.
 
 The fixed snapshots are `fixtures/v1/alpha.snapshot.json`, `fixtures/v1/beta.snapshot.json`, `fixtures/v1/before-reset/alpha.snapshot.json` (alpha before `/new` rotates thread-1) and `fixtures/v1/list/gamma.snapshot.json` (needs attention, measured context, a current tool, an unthreaded lane idle for over a day). `fixtures/v1/events/replay.json` has deterministic alpha→beta→alpha completed requests and tool calls with a reset, including one unknown occupancy, a failed call, two `skill_view` calls and a late call from the generation the reset ended. The replay tests generate snapshots and events through the real `Observer` and fail on drift. They are deterministic public fixtures, not captured transcripts. The plugin discovery probe invokes real Hermes hooks in A→B→A order without contacting Discord or an LLM.
 
@@ -88,3 +125,7 @@ Check it:
 - `swift test --package-path app`: decoder, list, bridge, details, Discord routing, offline, recovery, settings persistence and menu-status tests against the shared `fixtures/v1` files, including an FSEvents test on an atomic rename and ten malformed-file cases. `TelemetryStoreTests` publishes `fixtures/v1/events/replay.json` into a temporary Hermes root and imports it into a temporary database. They cover first import, replay, relaunch, a rebuilt event tree, tool calls linked to their request and generation, a tool call carrying arguments, a result or an error message (rejected, with a byte scan), the schema 1 → 2 migration, an interrupted batch, two files on one sequence number, segment rotation, gaps and rejected records (with a byte scan for their contents), the default profile, the schema allowlist and file modes, lineage grouping and a newer schema. `InsightsTests` imports fixed, hand-checkable observations and checks exact count, mean, median and peak per generation, profile and overall, the CSV and JSON field sets (and this README listing each one), quoting and timestamps, and a clear that covers events not imported yet, keeps the cursors, leaves every bridge file byte-identical and leaves no deleted byte or free page in the database. `TelemetrySyncTests` (app target) checks which runs may keep history, burst coalescing, and a skipped record reaching the diagnostics through `LiveStore.reload`. `InsightsSmokeTests` opens the Insights window from the popover's ⌘I, reads its tables, clicks through the clear confirmation (Cancel changes nothing), exports through the running store, shows History unavailable for a database that cannot open and for an import blocked by another connection's write lock, and rebuilds the statistics after an import that failed partway. `HermesContextAppTests` hosts the real popover, first-run, Settings and menu-bar label views in a window that is never ordered in, renders them to a bitmap and reads the drawn text back with Vision; clicks (the mode switch, the first-run buttons) order that window in fully transparent and blind to the real mouse, then send mouse events at the text Vision located. Settings tests use per-test `dev.banozz0.hermes-context.tests.*` defaults domains and a fake login item. `HERMES_CONTEXT_TEST_RENDERS=<dir>` keeps every rendered bitmap as a PNG.
 - `app/bundle.sh` builds and ad-hoc signs `app/build/HermesContext.app` (`UNIVERSAL=1` for Apple silicon and Intel, `OUT=<dir under app/>` elsewhere). `tests/test_installer.py` runs `install.sh` from stdin, as `curl | sh` does, with the real `hermes` CLI against a throwaway `HERMES_HOME` and `HOME`: install into two profiles, a no-op rerun, uninstall keeping history and bridge files, purge, and a preflight that stops without Hermes or on macOS below 14.
 - Headless launch, for agents (never draws on screen): `HERMES_CONTEXT_HEADLESS=1 HERMES_CONTEXT_HERMES_ROOT=<temp root> HERMES_CONTEXT_CHECK_OUTPUT=<file> HERMES_CONTEXT_CHECK_SECONDS=5 app/build/HermesContext.app/Contents/MacOS/HermesContext` hides the menu-bar item, rewrites `<file>` after every reload with the merged list as `current` and `hidden` rows (each with its `offline` flag, `details` fields and `discord` link), the bridge `diagnostics`, the `menu` item (title, symbol, working count, warned routing IDs), the `settings` it read and the Insights `history` (`off`, `loading`, `unavailable` with its reason, or `ready` with overall, per-profile and per-generation statistics), and quits itself. Add `HERMES_CONTEXT_DEFAULTS_SUITE=<name>` to read settings from a throwaway defaults domain instead of the app's own, and `HERMES_CONTEXT_DATABASE=<file>` to import the root's events into a throwaway database (check it with `sqlite3`). Headless runs never touch the login item.
+
+## License
+
+MIT. See `LICENSE`.

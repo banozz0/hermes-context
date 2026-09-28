@@ -89,7 +89,7 @@ import Testing
             let store = try await Self.store(root, settings)
             var activations = 0
             let insights = InsightsWindow(store: store, activate: { activations += 1 })
-            // Transparent and blind to the mouse, so nothing reaches Sven's screen.
+            // Transparent and blind to the mouse, so nothing reaches the user's screen.
             insights.window.alphaValue = 0
             insights.window.ignoresMouseEvents = true
             defer { insights.window.orderOut(nil) }

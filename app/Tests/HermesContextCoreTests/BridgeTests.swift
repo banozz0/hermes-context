@@ -76,12 +76,12 @@ import Testing
 
     @Test func relevantPathsAreSnapshotsEventsAndProfiles() {
         #expect(BridgeLocation.isRelevant(path: "/private/var/x/profiles/harry/hermes-context/v1/snapshot.json"))
-        #expect(BridgeLocation.isRelevant(path: "/Users/sven/.hermes/profiles/newcomer"))
-        #expect(!BridgeLocation.isRelevant(path: "/Users/sven/.hermes/profiles/harry/hermes-context/v1/.snapshot.json.1.tmp"))
-        #expect(!BridgeLocation.isRelevant(path: "/Users/sven/.hermes/logs/gateway.log"))
-        let segment = "/Users/sven/.hermes/profiles/harry/hermes-context/v1/events/000001"
+        #expect(BridgeLocation.isRelevant(path: "/Users/someone/.hermes/profiles/newcomer"))
+        #expect(!BridgeLocation.isRelevant(path: "/Users/someone/.hermes/profiles/harry/hermes-context/v1/.snapshot.json.1.tmp"))
+        #expect(!BridgeLocation.isRelevant(path: "/Users/someone/.hermes/logs/gateway.log"))
+        let segment = "/Users/someone/.hermes/profiles/harry/hermes-context/v1/events/000001"
         #expect(BridgeLocation.isRelevant(path: "\(segment)/000000000001-hc1:\(String(repeating: "a", count: 64)).json"))
         #expect(!BridgeLocation.isRelevant(path: "\(segment)/.123.456.abc.tmp"))
-        #expect(!BridgeLocation.isRelevant(path: "/Users/sven/.hermes/profiles/harry/hermes-context/v1/generations/ab.json"))
+        #expect(!BridgeLocation.isRelevant(path: "/Users/someone/.hermes/profiles/harry/hermes-context/v1/generations/ab.json"))
     }
 }

@@ -4,7 +4,7 @@ import Testing
 @testable import HermesContextCore
 
 @Suite struct TelemetrySyncTests {
-    /// A fixture root must never write Sven's real history: overriding the Hermes root, or running headless,
+    /// A fixture root must never write the user's real history: overriding the Hermes root, or running headless,
     /// needs an explicit database.
     @Test func realHistoryOnlyForTheRealBridge() {
         let explicit = TelemetrySync.databaseURL(["HERMES_CONTEXT_DATABASE": "/tmp/x.sqlite", "HERMES_CONTEXT_HEADLESS": "1"])

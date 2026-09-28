@@ -1,6 +1,7 @@
 """Live Hermes plugin-discovery probe using only temporary profile homes."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -12,10 +13,12 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
 PLUGIN_SOURCE = PROJECT / "hermes_context_observer"
-HERMES_SOURCE = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-if not (HERMES_SOURCE / "hermes_constants.py").is_file():
-    raise SystemExit("Hermes source checkout not found; set HERMES_AGENT_SOURCE")
-sys.path.insert(0, str(HERMES_SOURCE))
+os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"  # Else Hermes's launch bootstrap rewrites the real install; see conftest.
+HERMES_SPEC = importlib.util.find_spec("hermes_constants")
+HERMES_SOURCE = os.environ.get("HERMES_AGENT_SOURCE") or (HERMES_SPEC and HERMES_SPEC.origin and str(Path(HERMES_SPEC.origin).parent))
+if not HERMES_SOURCE:
+    raise SystemExit("Hermes not found: run this under Hermes's Python or set HERMES_AGENT_SOURCE")
+sys.path.insert(0, HERMES_SOURCE)  # First even when Hermes is installed editable: that finder only knows install-time modules.
 
 
 def install_plugin(home: Path) -> None:

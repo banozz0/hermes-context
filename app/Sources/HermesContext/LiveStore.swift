@@ -118,7 +118,7 @@ final class LiveStore {
 }
 
 /// `HERMES_CONTEXT_HEADLESS=1` runs with no menu-bar item so agents can launch the real app without
-/// drawing on Sven's screen. `HERMES_CONTEXT_CHECK_OUTPUT` receives the merged list after every reload;
+/// drawing on the user's screen. `HERMES_CONTEXT_CHECK_OUTPUT` receives the merged list after every reload;
 /// `HERMES_CONTEXT_CHECK_SECONDS` quits the app through `NSApp.terminate` after that long;
 /// `HERMES_CONTEXT_DEFAULTS_SUITE` reads settings from a throwaway defaults domain instead of the app's own.
 struct HeadlessCheck {

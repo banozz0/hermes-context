@@ -23,7 +23,9 @@ def world(tmp_path: Path) -> dict:
     home.mkdir()
     hermes_home.mkdir()
     env = {key: value for key, value in os.environ.items() if not key.startswith("HERMES")}
-    env.update(HOME=str(home), HERMES_HOME=str(hermes_home))
+    # Lazy installs off, or the CLI syncs dependencies into this throwaway home and republishes the real install's
+    # launchers pointing at it.
+    env.update(HOME=str(home), HERMES_HOME=str(hermes_home), HERMES_DISABLE_LAZY_INSTALLS="1")
     subprocess.run(["hermes", "profile", "create", "alpha", "--no-alias", "--no-skills"], env=env, check=True,
                    capture_output=True)
     # A display name turns the default row's label into `Main Bot (default)`.

@@ -94,7 +94,7 @@ import Testing
     }
 
     /// SwiftUI ignores events in a window that was never ordered in. Orders it in fully transparent, blind to the
-    /// real mouse and without activating the test process, so nothing reaches Sven's screen or focus, for `body` only.
+    /// real mouse and without activating the test process, so nothing reaches the user's screen or focus, for `body` only.
     static func orderedIn(_ window: NSWindow, _ body: () throws -> Void) rethrows {
         window.alphaValue = 0
         window.ignoresMouseEvents = true

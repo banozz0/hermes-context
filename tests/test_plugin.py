@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-
-import pytest
 
 import hermes_context_observer as plugin
 from hermes_context_observer import register
@@ -119,11 +116,7 @@ def test_channel_label_is_one_bounded_line_and_bad_directories_are_ignored(tmp_p
         assert plugin._route("alpha", tmp_path).channel_label is None
 
 
-def test_cli_registration_does_not_publish_gateway_heartbeat(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    if not (hermes_source / "hermes_constants.py").is_file():
-        pytest.skip("Hermes source checkout is required for the plugin integration seam")
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_cli_registration_does_not_publish_gateway_heartbeat(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway import status
     monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: False)
@@ -136,11 +129,7 @@ def test_cli_registration_does_not_publish_gateway_heartbeat(tmp_path: Path, mon
         context.unload()
 
 
-def test_registration_publishes_profile_heartbeat_without_any_hook(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    if not (hermes_source / "hermes_constants.py").is_file():
-        pytest.skip("Hermes source checkout is required for the plugin integration seam")
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_registration_publishes_profile_heartbeat_without_any_hook(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway import status
     monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
@@ -160,11 +149,7 @@ def test_registration_publishes_profile_heartbeat_without_any_hook(tmp_path: Pat
             context.unload()
 
 
-def test_registration_restores_saved_rows_without_an_inbound_message(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    if not (hermes_source / "hermes_constants.py").is_file():
-        pytest.skip("Hermes source checkout is required for the plugin integration seam")
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_registration_restores_saved_rows_without_an_inbound_message(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway import status
     monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
@@ -187,12 +172,8 @@ def test_registration_restores_saved_rows_without_an_inbound_message(tmp_path: P
             context.unload()
 
 
-def test_registration_before_the_gateway_lock_starts_once_the_gateway_takes_it(tmp_path: Path, monkeypatch):
+def test_registration_before_the_gateway_lock_starts_once_the_gateway_takes_it(tmp_path: Path, monkeypatch, hermes):
     """Hermes loads the launch profile's plugins during config load, before its gateway claims the runtime lock."""
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    if not (hermes_source / "hermes_constants.py").is_file():
-        pytest.skip("Hermes source checkout is required for the plugin integration seam")
-    monkeypatch.syspath_prepend(str(hermes_source))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway import status
     owns_lock = [False]
@@ -219,11 +200,7 @@ def test_registration_before_the_gateway_lock_starts_once_the_gateway_takes_it(t
         context.unload()
 
 
-def test_register_uses_only_supported_observer_hooks(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    if not (hermes_source / "hermes_constants.py").is_file():
-        pytest.skip("Hermes source checkout is required for the plugin integration seam")
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_register_uses_only_supported_observer_hooks(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     context = FakeContext()
     register(context)
@@ -235,9 +212,7 @@ def test_register_uses_only_supported_observer_hooks(tmp_path: Path, monkeypatch
             context.unload()
 
 
-def test_child_request_on_parent_route_does_not_create_a_generation(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_child_request_on_parent_route_does_not_create_a_generation(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from agent.delegation_context import delegated_child_context
     from gateway.session_context import set_session_vars, clear_session_vars
@@ -262,9 +237,7 @@ def test_child_request_on_parent_route_does_not_create_a_generation(tmp_path: Pa
         context.unload()
 
 
-def test_unknown_lifecycle_hooks_cannot_rotate_a_known_lane(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_unknown_lifecycle_hooks_cannot_rotate_a_known_lane(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway.session_context import set_session_vars, clear_session_vars
     from gateway import status
@@ -285,9 +258,7 @@ def test_unknown_lifecycle_hooks_cannot_rotate_a_known_lane(tmp_path: Path, monk
         context.unload()
 
 
-def test_competing_compression_sibling_cannot_replace_selected_tip(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_competing_compression_sibling_cannot_replace_selected_tip(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway.session_context import set_session_vars, clear_session_vars
     from gateway import status
@@ -322,9 +293,7 @@ def test_competing_compression_sibling_cannot_replace_selected_tip(tmp_path: Pat
         context.unload()
 
 
-def test_two_compressions_before_request_preserve_immediate_predecessor(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_two_compressions_before_request_preserve_immediate_predecessor(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway.session_context import set_session_vars, clear_session_vars
     from gateway import status
@@ -350,9 +319,7 @@ def test_two_compressions_before_request_preserve_immediate_predecessor(tmp_path
         context.unload()
 
 
-def test_compression_successor_links_without_plugin_reset_hook(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_compression_successor_links_without_plugin_reset_hook(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway.session_context import set_session_vars, clear_session_vars
     from gateway import status
@@ -380,10 +347,8 @@ def test_compression_successor_links_without_plugin_reset_hook(tmp_path: Path, m
         clear_session_vars(tokens)
         context.unload()
 
-def test_gateway_route_switch_without_reset_and_resume_preserve_history(tmp_path: Path, monkeypatch):
+def test_gateway_route_switch_without_reset_and_resume_preserve_history(tmp_path: Path, monkeypatch, hermes):
     """Gateway key repoints without a plugin reset hook on recovery and /resume."""
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    monkeypatch.syspath_prepend(str(hermes_source))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from gateway.session_context import set_session_vars, clear_session_vars
     from gateway import status
@@ -437,9 +402,7 @@ def test_gateway_route_switch_without_reset_and_resume_preserve_history(tmp_path
         clear_session_vars(tokens)
         context.unload()
 
-def test_scoped_profiles_use_process_route_index_and_isolate_events(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_scoped_profiles_use_process_route_index_and_isolate_events(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from gateway.session_context import set_session_vars, clear_session_vars
@@ -486,11 +449,7 @@ def test_scoped_profiles_use_process_route_index_and_isolate_events(tmp_path: Pa
 SENTINEL = "PRIVACY-SENTINEL-4c1e"
 
 
-def test_post_tool_call_publishes_sanitized_usage_once(tmp_path: Path, monkeypatch):
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    if not (hermes_source / "hermes_constants.py").is_file():
-        pytest.skip("Hermes source checkout is required for the plugin integration seam")
-    monkeypatch.syspath_prepend(str(hermes_source))
+def test_post_tool_call_publishes_sanitized_usage_once(tmp_path: Path, monkeypatch, hermes):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from agent.delegation_context import delegated_child_context
     from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
@@ -550,12 +509,8 @@ def test_post_tool_call_publishes_sanitized_usage_once(tmp_path: Path, monkeypat
         context.unload()
 
 
-def test_registration_backfills_routed_discord_lanes_with_last_context(tmp_path: Path, monkeypatch):
+def test_registration_backfills_routed_discord_lanes_with_last_context(tmp_path: Path, monkeypatch, hermes):
     """A fresh install lists every lane the gateway already routes for this profile, before any new request."""
-    hermes_source = Path(os.environ.get("HERMES_AGENT_SOURCE", "/Users/sven/.hermes/hermes-agent"))
-    if not (hermes_source / "hermes_constants.py").is_file():
-        pytest.skip("Hermes source checkout is required for the plugin integration seam")
-    monkeypatch.syspath_prepend(str(hermes_source))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from gateway.session_context import set_session_vars, clear_session_vars
