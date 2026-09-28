@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import ast
+import builtins
+import functools
+import importlib
 import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 import hermes_context_observer as plugin
-from hermes_context_observer import register
+from hermes_context_observer import compat, register
 from hermes_context_observer.compat import HOOK_FEATURES, INTERNAL_FEATURES, Hermes
 from hermes_context_observer.contract import DEGRADED_FEATURES, effective_freshness, validate_snapshot
-from hermes_context_observer.observer import KnownLane, Observer, Route
+from hermes_context_observer.observer import KnownLane, Observer, Route, timestamp
 
 from conftest import read_snapshot
 
@@ -61,7 +67,19 @@ class StubHermes(Hermes):
 
 def test_every_feature_has_its_internals_and_hooks_in_the_map():
     assert set(HOOK_FEATURES) == EXPECTED_HOOKS
-    assert set(INTERNAL_FEATURES.values()) | set(HOOK_FEATURES.values()) == DEGRADED_FEATURES
+    assert set().union(*INTERNAL_FEATURES.values(), HOOK_FEATURES.values()) == DEGRADED_FEATURES
+
+
+def test_the_map_lists_every_hermes_internal_compat_reaches():
+    """compat.py imports Hermes only inside its accessors: each name imported there, and each session database method
+    called, has an entry. The removal test proves the converse, that every entry is reached."""
+    tree = ast.parse(Path(compat.__file__).read_text(encoding="utf-8"))
+    reached = {f"{node.module}.{alias.name}" for function in ast.walk(tree) if isinstance(function, ast.FunctionDef)
+               for node in ast.walk(function) if isinstance(node, ast.ImportFrom) for alias in node.names}
+    reached |= {f"hermes_state.SessionDB.{node.func.attr}" for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and getattr(node.func.value, "id", None) == "db"}
+    assert reached - set(INTERNAL_FEATURES) == set()
 
 
 def test_display_name_precedence_is_thread_then_generated_title_then_fallback(tmp_path: Path):
@@ -224,8 +242,7 @@ def test_lost_title_lookup_switches_off_only_titles(tmp_path: Path, monkeypatch,
     with SessionDB(tmp_path / "state.db") as db:
         db.create_session("s", "discord")
         db.set_session_title("s", "Weekly planning")  # what the row would be called with the lookup in place
-    owner = next(cls for cls in SessionDB.__mro__ if "get_session_title" in vars(cls))
-    monkeypatch.delattr(owner, "get_session_title")
+    monkeypatch.delattr(defining_class(SessionDB, "get_session_title"), "get_session_title")
     save_context_length("m", "https://models.example.test/v1", 200_000)
     context = FakeContext()
     register(context)
@@ -247,6 +264,146 @@ def test_lost_title_lookup_switches_off_only_titles(tmp_path: Path, monkeypatch,
     finally:
         clear_session_vars(tokens)
         context.unload()
+
+
+def defining_class(cls: type, name: str) -> type:
+    """The class in `cls`'s MRO that defines `name`: Hermes builds SessionDB from mixins."""
+    return next(c for c in cls.__mro__ if name in vars(c))
+
+
+def without(monkeypatch, internal: str) -> None:
+    """Hermes without `internal`, as the plugin meets it after a rename: a class attribute is deleted from the class
+    that defines it; a module attribute stays for Hermes's own callers, but the plugin's import of it fails."""
+    parts = internal.split(".")
+    for split in range(len(parts) - 1, 0, -1):
+        try:
+            owner = importlib.import_module(".".join(parts[:split]))
+            break
+        except ImportError:
+            continue
+    *classes, name = parts[split:]
+    if classes:
+        cls = functools.reduce(getattr, classes, owner)
+        monkeypatch.delattr(defining_class(cls, name), name)
+        return
+    real_import = builtins.__import__
+
+    def blocked(module, globals=None, locals=None, fromlist=(), level=0):
+        if (module == owner.__name__ and name in (fromlist or ())
+                and (globals or {}).get("__name__", "").startswith("hermes_context_observer")):
+            raise ImportError(f"cannot import name {name!r} from {module!r}")
+        return real_import(module, globals, locals, fromlist, level)
+    monkeypatch.setattr(builtins, "__import__", blocked)
+
+
+LOST = [*INTERNAL_FEATURES.items(), *((f"hook:{hook}", {feature}) for hook, feature in HOOK_FEATURES.items())]
+
+
+@pytest.mark.parametrize("internal, features", LOST, ids=[internal for internal, _ in LOST])
+def test_hermes_without_an_internal_switches_off_only_its_features(tmp_path: Path, monkeypatch, hermes,
+                                                                  internal, features):
+    """A Hermes update that drops one internal or hook costs only the features the map gives it: the plugin registers
+    and beats, `degraded` names exactly those features, and unless `sessions` is lost a completed request still
+    measures context (percentage unknown only without `context_window`)."""
+    from agent.model_metadata import save_context_length
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from gateway import status
+    from hermes_cli import plugins
+    from hermes_state import SessionDB
+    monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr(plugin, "Observer", functools.partial(Observer, heartbeat_interval_seconds=0.05))
+    base_url = "https://models.example.test/v1"
+    save_context_length("m", base_url, 200_000)
+    scope = str((tmp_path / "sessions").resolve())
+    lane, backfilled = "agent:alpha:discord:group:channel-20", "agent:alpha:discord:thread:thread-1"
+    with SessionDB(tmp_path / "state.db") as db:
+        for session_id in ("s", "b"):
+            db.create_session(session_id, "discord", model="m")
+        db.end_session("s", "compression")
+        db.create_session("s2", "discord", parent_session_id="s")  # s's compression successor
+        # Too bare for backfill, so the live lane is admitted by ownership; thread-1 is backfilled at activation.
+        db.save_gateway_routing_entry(lane, json.dumps({"session_key": lane, "session_id": "s"}), scope=scope)
+        db.save_gateway_routing_entry(backfilled, json.dumps({
+            "session_key": backfilled, "session_id": "b", "platform": "discord", "last_prompt_tokens": 7,
+            "origin": {"platform": "discord", "chat_type": "thread", "chat_id": "thread-1", "thread_id": "thread-1",
+                       "user_id": "u"},
+            "created_at": "2026-09-27T12:00:00", "updated_at": "2026-09-27T12:00:00", "expiry_finalized": False,
+        }), scope=scope)
+    if internal.startswith("hook:"):
+        monkeypatch.setattr(plugins, "VALID_HOOKS", set(plugins.VALID_HOOKS) - {internal.removeprefix("hook:")})
+    else:
+        without(monkeypatch, internal)
+    context = FakeContext()
+    register(context)
+    hooks = context.hooks
+    route = {"model": "m", "provider": "anthropic", "base_url": base_url}
+    tokens = set_session_vars(platform="discord", chat_id="channel-20", session_key=lane, session_id="s")
+    try:
+        assert set(hooks) == EXPECTED_HOOKS
+        hooks["pre_gateway_dispatch"]()
+        hooks["on_session_start"](session_id="s")
+        hooks["pre_api_request"](session_id="s", **route)
+        hooks["post_api_request"](session_id="s", api_request_id="r1", usage={"prompt_tokens": 50_000}, **route)
+        hooks["pre_tool_call"](session_id="s", tool_name="clarify")
+        hooks["pre_approval_request"](session_id="s")
+        hooks["post_approval_response"](session_id="s")
+        for call, result in (("c1", "done"), ("c2", {"_multimodal": True, "content": [{"type": "text", "text": "x"}]})):
+            hooks["post_tool_call"](session_id="s", tool_name="terminal", tool_call_id=call, api_request_id="r1",
+                                    result=result, status="ok", duration_ms=1)
+        hooks["post_api_request"](session_id="s2", api_request_id="r2", usage={"prompt_tokens": 60_000}, **route)
+        hooks["on_session_end"](session_id="s2")
+        after, deadline = timestamp(), time.monotonic() + 5
+        while (snapshot := read_snapshot(tmp_path))["gateway"]["heartbeat_at"] <= after:  # A beat after every mark.
+            assert time.monotonic() < deadline, "no heartbeat after the hooks ran"
+            time.sleep(0.02)
+        validate_snapshot(snapshot)
+        assert snapshot.get("degraded", []) == sorted(features)
+        if "sessions" not in features:
+            rows = {row["discord_route"]["channel_id"]: row for row in snapshot["sessions"]}
+            assert type(rows["channel-20"]["context"]["used"]) is int
+            assert (rows["channel-20"]["context"]["percentage"] is None) == ("context_window" in features)
+            assert "thread-1" in rows or "backfill" in features  # The backfill path ran, so its losses are real.
+    finally:
+        clear_session_vars(tokens)
+        context.unload()
+
+
+def test_an_unforeseen_error_never_escapes_a_hook(tmp_path: Path, monkeypatch, hermes, caplog):
+    """An error no fallback expects aborts only the plugin's callback, never the Hermes turn, and is logged once."""
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from gateway import status
+    from hermes_state import SessionDB
+    monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
+    with SessionDB(tmp_path / "state.db") as db:
+        db.create_session("s", "discord")
+
+    def title(self, session_id):
+        raise LookupError("a failure no fallback expects")
+    monkeypatch.setattr(defining_class(SessionDB, "get_session_title"), "get_session_title", title)
+    context = FakeContext()
+    register(context)
+    tokens = set_session_vars(platform="discord", chat_id="channel-20", session_id="s")  # unthreaded: asks for a title
+    try:
+        for request_id in ("r1", "r2"):
+            context.hooks["post_api_request"](session_id="s", api_request_id=request_id, model="m", provider="p",
+                                              usage={"prompt_tokens": 5})
+        assert [r.getMessage() for r in caplog.records if r.name == "hermes_context_observer"] == [
+            "Hermes Context's post_api_request hook failed; Hermes carries on without it"]
+        assert "degraded" not in read_snapshot(tmp_path)  # Not a change the plugin can name.
+    finally:
+        clear_session_vars(tokens)
+        context.unload()
+
+
+def test_registration_never_throws_into_hermes(tmp_path: Path, hermes, caplog):
+    """A Hermes whose plugin API changed shape gets a logged, unobserved process, never a failed plugin load."""
+    class ChangedContext(FakeContext):
+        def register_hook(self, name, callback, priority):  # A new required argument.
+            super().register_hook(name, callback)
+
+    register(ChangedContext())
+    assert [r.getMessage() for r in caplog.records if r.name == "hermes_context_observer"] == [
+        "Hermes Context could not register; this Hermes process goes unobserved"]
 
 
 def test_register_uses_only_supported_observer_hooks(tmp_path: Path, monkeypatch, hermes):

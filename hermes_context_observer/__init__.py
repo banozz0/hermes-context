@@ -18,6 +18,8 @@ from .compat import Hermes
 from .contract import CHANNEL_LABEL_MAX
 from .observer import KnownLane, Observer, Route, timestamp
 
+_log = logging.getLogger(__name__)
+
 
 def _clean(value: Any) -> str | None:
     """One line of plain text: control characters and runs of whitespace become single spaces."""
@@ -107,19 +109,6 @@ def _session_id(hermes: Hermes, payload: dict[str, Any]) -> str:
     return str(payload.get("session_id") or hermes.session_value("HERMES_SESSION_ID") or "").strip()
 
 
-def _route_owner(hermes: Hermes, home: Path, route: Route, session_id: str) -> bool:
-    """The gateway's current routing index, not the borrowed task-local session ID."""
-    if not route.session_key:
-        return False
-    try:
-        owners = {entry.get("session_id") for entry in hermes.routing_entries(home)
-                  if entry.get("session_key") == route.session_key}
-        return owners == {session_id}
-    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
-        logging.getLogger(__name__).warning("Gateway routing ownership unavailable in %s: %s", home, exc)
-        return False
-
-
 def _known_lanes(hermes: Hermes, routing_home: Path, home: Path, profile: str) -> list[KnownLane]:
     """Discord lanes the gateway already routes for this profile, with Hermes's last prompt size."""
     try:
@@ -139,7 +128,7 @@ def _known_lanes(hermes: Hermes, routing_home: Path, home: Path, profile: str) -
             ))
         return lanes
     except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error) as exc:
-        logging.getLogger(__name__).warning("Routed lanes unavailable for %s: %s", profile, exc)
+        _log.warning("Routed lanes unavailable for %s: %s", profile, exc)
         return []
 
 
@@ -151,9 +140,36 @@ def _skill_name(tool_name: str, args: Any, status: str) -> str | None:
     return (name.strip() or None) if isinstance(name, str) else None
 
 
+def _guarded(hook: str, callback: Callable[..., None]) -> Callable[..., None]:
+    """The callback, unable to throw into the Hermes turn that fired it; its first failure is logged."""
+    failed = False
+
+    @functools.wraps(callback)
+    def guarded(**payload: Any) -> None:
+        nonlocal failed
+        try:
+            callback(**payload)
+        except Exception:
+            if not failed:
+                failed = True
+                _log.warning("Hermes Context's %s hook failed; Hermes carries on without it", hook, exc_info=True)
+    return guarded
+
+
 def register(ctx) -> None:
-    """Register observer-only callbacks on Hermes's supported lifecycle surface."""
+    """Register observer-only callbacks on Hermes's supported lifecycle surface.
+
+    Never throws: a Hermes change may cost features, never the plugin's place in Hermes.
+    """
+    try:
+        _register(ctx)
+    except Exception:
+        _log.warning("Hermes Context could not register; this Hermes process goes unobserved", exc_info=True)
+
+
+def _register(ctx) -> None:
     hermes = Hermes()
+    hermes.check()
     home = hermes.profile_home()
     routing_home = hermes.routing_home()
     profile = str(ctx.profile_name)
@@ -161,14 +177,17 @@ def register(ctx) -> None:
         home,
         profile,
         thread_factory=hermes.thread_factory(),
-        gateway_owner=hermes.gateway_owner(),
+        gateway_owner=hermes.owns_gateway,
         compression_chain=lambda session_id: hermes.compression_chain(home, session_id),
-        route_owner=lambda route, session_id: _route_owner(hermes, routing_home, route, session_id),
+        # The gateway's current routing index, not the borrowed task-local session ID.
+        route_owner=lambda route, session_id: bool(route.session_key) and hermes.route_owned(
+            routing_home, route.session_key, session_id),
         known_lanes=lambda: _known_lanes(hermes, routing_home, home, profile),
         degraded=hermes.degraded,
     )
 
     def pre_gateway_dispatch(**_payload: Any) -> None:
+        hermes.gateway_dispatched()
         observer.start_heartbeat()
 
     def on_session_start(**payload: Any) -> None:
@@ -280,6 +299,6 @@ def register(ctx) -> None:
         "on_session_reset": on_session_reset,
     }
     for name, callback in callbacks.items():
-        ctx.register_hook(name, callback)
+        ctx.register_hook(name, _guarded(name, callback))
     ctx.on_unload(observer.close)
     observer.start_heartbeat()

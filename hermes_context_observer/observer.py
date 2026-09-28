@@ -217,10 +217,13 @@ class Observer:
 
     def _provider_context(self, used: int | None, maximum: int | None, source: str | None,
                           moment: str) -> dict[str, Any]:
-        if type(used) is int and used >= 0 and type(maximum) is int and maximum > 0 and source:
-            return {"used": used, "maximum": maximum, "percentage": min(100.0, round(used / maximum * 100, 6)),
-                    "source": source, "measured_at": moment}
-        return self._empty_context()
+        """A provider-reported measurement; without a known window, the used tokens alone."""
+        if type(used) is not int or used < 0 or not source:
+            return self._empty_context()
+        if type(maximum) is not int or maximum <= 0:
+            return {**self._empty_context(), "used": used, "source": source, "measured_at": moment}
+        return {"used": used, "maximum": maximum, "percentage": min(100.0, round(used / maximum * 100, 6)),
+                "source": source, "measured_at": moment}
 
     def _new_row(
         self,
@@ -509,12 +512,15 @@ class Observer:
         request_id: str | None,
         tool_name: str,
         skill_name: str | None,
-        estimated_tokens: int,
+        estimated_tokens: int | None,
         duration_ms: int,
         status: str,
         at: str | float | datetime | None = None,
     ) -> None:
-        """Record one completed tool call like a request, and clear its lane's current tool in the same transaction."""
+        """Record one completed tool call like a request, and clear its lane's current tool in the same transaction.
+
+        Without Hermes's estimate (`None`) no record is written; the lane still moves on.
+        """
         if not session_id or route.profile != self.profile:
             return
         moment = timestamp(at)
@@ -522,7 +528,7 @@ class Observer:
             row = self._owning_row(route, session_id, at=moment)
             if row is None:
                 return
-            if tool_call_id and tool_name:
+            if tool_call_id and tool_name and estimated_tokens is not None:
                 # Hermes makes tool_call_ids unique only within one model response, so the issuing request is part
                 # of the identity; the "tool_call" tag keeps it apart from every request identity.
                 event_id = v1_identity("tool_call", route.profile, session_id, request_id or "", tool_call_id)
@@ -612,10 +618,7 @@ class Observer:
                         return
                     self.heartbeat()
 
-            try:
-                thread = self._thread_factory(target=run, name=f"hermes-context:{self.profile}", daemon=True)
-            except TypeError:
-                thread = self._thread_factory(run, name=f"hermes-context:{self.profile}", daemon=True)
+            thread = self._thread_factory(target=run, name=f"hermes-context:{self.profile}", daemon=True)
             self._thread = thread
             thread.start()
 
