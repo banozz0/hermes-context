@@ -1,12 +1,15 @@
 #!/bin/sh
 # Builds a release into app/build/release: the universal, ad-hoc signed app as HermesContext.zip, and
-# install.sh stamped with this version and commit. Publishing them as a GitHub Release is a separate step.
+# install.sh stamped with this version and commit, which must already be on origin/main. Publishing them
+# as a GitHub Release is a separate step.
 set -eu
 cd "$(dirname "$0")"
 if [ -n "$(git status --porcelain -- hermes_context_observer app/Sources app/Package.swift app/bundle.sh install.sh pyproject.toml)" ]; then
     echo "release.sh: commit the app, plugin and installer first; install.sh pins the commit." >&2
     exit 1
 fi
+git fetch --quiet origin main
+git merge-base --is-ancestor HEAD origin/main || { echo "release.sh: push to origin/main first; install.sh pins the commit." >&2; exit 1; }
 plugin_version=$(sed -n 's/^version: "\(.*\)"$/\1/p' hermes_context_observer/plugin.yaml)
 out=build/release
 rm -rf "app/$out"
