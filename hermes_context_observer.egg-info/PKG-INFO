@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: hermes-context-observer
+Version: 0.1.0
+Summary: Privacy-safe live Hermes session observer bridge
+Requires-Python: >=3.11
+License-File: LICENSE
+Dynamic: license-file
