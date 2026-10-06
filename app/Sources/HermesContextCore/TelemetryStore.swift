@@ -319,7 +319,7 @@ public final class TelemetryStore {
         }
         try run("VACUUM")
         // A checkpoint that another connection blocks reports it in a row, not as an error.
-        guard try query("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }.first == 0 else {
+        guard try query("PRAGMA wal_checkpoint(TRUNCATE)", [], { $0.int(0) }).first == 0 else {
             throw TelemetryStoreError.sqlite("history cleared, but another connection blocked the checkpoint that removes its deleted pages")
         }
     }
