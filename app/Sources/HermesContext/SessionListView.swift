@@ -26,6 +26,36 @@ struct PopoverView: View {
         .frame(width: 360)
         // The menu-bar window may size the popover to its minimum, where a ScrollView collapses to nothing.
         .fixedSize(horizontal: false, vertical: true)
+        .background(PinTopEdge())
+    }
+}
+
+/// AppKit keeps a resized window's bottom edge, so a popover that shrinks while open (its last lanes gone,
+/// a shorter pane) would drop away from the menu bar. This puts the top edge back after every such resize.
+struct PinTopEdge: NSViewRepresentable {
+    func makeNSView(context: Context) -> PinView { PinView() }
+    func updateNSView(_ view: PinView, context: Context) {}
+
+    final class PinView: NSView {
+        private var last: NSRect?
+
+        override func viewDidMoveToWindow() {
+            NotificationCenter.default.removeObserver(self)
+            last = window?.frame
+            guard let window else { return }
+            for name in [NSWindow.didResizeNotification, NSWindow.didMoveNotification] {
+                NotificationCenter.default.addObserver(self, selector: #selector(frameChanged), name: name, object: window)
+            }
+        }
+
+        /// A resize that kept the origin came from the content; one that moved it is the system placing the window.
+        @objc private func frameChanged() {
+            guard let window else { return }
+            if let last, window.frame.origin == last.origin, window.frame.height != last.height {
+                window.setFrameTopLeftPoint(NSPoint(x: last.minX, y: last.maxY))
+            }
+            last = window.frame
+        }
     }
 }
 

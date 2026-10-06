@@ -110,6 +110,26 @@ import Testing
         }
     }
 
+    /// The popover shrinks when its last lanes go; AppKit keeps a resized window's bottom edge, which used to
+    /// drop the empty popover far below the menu bar.
+    @Test func popoverKeepsItsTopEdgeWhenTheListShrinks() throws {
+        let root = try Self.liveRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try withSettings { settings, _ in
+            let store = Self.store(root, settings)
+            let window = NSWindow(contentRect: NSRect(x: 100, y: 300, width: 360, height: 340), styleMask: .borderless, backing: .buffered, defer: true)
+            window.contentView = NSHostingView(rootView: Self.popover(store))
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+            let top = window.frame.maxY
+            try FileManager.default.removeItem(at: root)
+            store.reload()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+            #expect(store.list.current.isEmpty)
+            #expect(window.frame.height < 200, "the empty popover shrinks: \(window.frame)")
+            #expect(window.frame.maxY == top, "top edge moved: \(window.frame)")
+        }
+    }
+
     @Test func menuBarLabelShowsTheWorkingCount() throws {
         let root = try Self.liveRoot()
         defer { try? FileManager.default.removeItem(at: root) }
