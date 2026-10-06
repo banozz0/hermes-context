@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 app/.build/
 app/build/
+*.egg-info/
