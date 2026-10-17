@@ -17,6 +17,20 @@ Public, MIT. `README.md` is both the user guide and the contract's human spec.
 - Nightly, `.github/workflows/hermes-compat.yml` runs the Python suite and the discovery probe on Linux against Hermes main
   and the latest release: a test that needs macOS skips itself there, and a break arrives as a `hermes-compat` issue.
 
+## Layout
+```
+hermes-context/
+├── hermes_context_observer/  # the observer-only Hermes plugin (plugin.yaml, observer, events, contract)
+├── contracts/v1/             # snapshot and event JSON schemas: the privacy allowlist
+├── fixtures/v1/              # sample snapshots and event replays both suites read
+├── tests/                    # Python suite, incl. the installer test
+├── app/                      # Swift package for the menu-bar app; bundle.sh builds it
+│   ├── Sources/              # HermesContext (app) and HermesContextCore (logic)
+│   └── Tests/                # app and core suites
+├── .github/workflows/        # CI and the nightly hermes-compat run
+└── .claude/                  # project Claude Code settings
+```
+
 ## Rules the tests only partly enforce
 - Privacy is an allowlist. Snapshots, events, SQLite and exports carry only the fields `contracts/v1/*.schema.json` names;
   prompts, responses, tool arguments, results and error text never enter any of them.
